@@ -370,13 +370,14 @@ class DBInterface(object):
         return net_uuid
     #end _virtual_network_create
 
-    def _virtual_network_read(self, net_id=None, fq_name=None):
+    def _virtual_network_read(self, net_id=None, fq_name=None, fields=None):
         if net_id:
             try:
                 # return self._db_cache['vnc_networks'][net_id]
                 raise KeyError
             except KeyError:
-                net_obj = self._vnc_lib.virtual_network_read(id=net_id)
+                net_obj = self._vnc_lib.virtual_network_read(id=net_id,
+                                                             fields=fields)
                 fq_name_str = json.dumps(net_obj.get_fq_name())
                 self._db_cache['vnc_networks'][net_id] = net_obj
                 self._db_cache['vnc_networks'][fq_name_str] = net_obj
@@ -388,7 +389,8 @@ class DBInterface(object):
                 # return self._db_cache['vnc_networks'][fq_name_str]
                 raise KeyError
             except KeyError:
-                net_obj = self._vnc_lib.virtual_network_read(fq_name=fq_name)
+                net_obj = self._vnc_lib.virtual_network_read(fq_name=fq_name,
+                                                             fields=fields)
                 self._db_cache['vnc_networks'][fq_name_str] = net_obj
                 self._db_cache['vnc_networks'][net_obj.uuid] = net_obj
                 return net_obj
@@ -412,7 +414,10 @@ class DBInterface(object):
         except KeyError:
             pass
 
-        self._vnc_lib.virtual_network_delete(id=net_id)
+        try:
+            self._vnc_lib.virtual_network_delete(id=net_id)
+        except RefsExistError:
+            raise exceptions.NetworkInUse()
 
         try:
             del self._db_cache['vnc_networks'][net_id]
@@ -733,11 +738,13 @@ class DBInterface(object):
         ret_list = []
 
         try:
-            net_obj = self._virtual_network_read(net_id=network_id)
+            net_obj = self._virtual_network_read(net_id=network_id,
+                           fields=['virtual_machine_interface_back_refs'])
         except NoIdError:
             return ret_list
 
-        port_back_refs = net_obj.get_virtual_machine_interface_back_refs()
+        port_back_refs = getattr(net_obj,
+                                'virtual_machine_interface_back_refs', None)
         if port_back_refs:
             for port_back_ref in port_back_refs:
                 ret_list.append({'id': port_back_ref['uuid']})
@@ -1028,8 +1035,8 @@ class DBInterface(object):
                 # TODO add security group specific exception
                 raise exceptions.NetworkNotFound(net_id=sg_id)
 
-        remote_cidr = ''
-        remote_sg_uuid = ''
+        remote_cidr = None
+        remote_sg_uuid = None
         saddr = sg_rule.get_src_addresses()[0]
         daddr = sg_rule.get_dst_addresses()[0]
         if saddr.get_security_group() == 'local':
