@@ -1869,10 +1869,10 @@ class DBInterface(object):
 
             for proj_id in project_uuids:
                 if filters and 'router:external' in filters:
-                    all_nets.append(self._fip_pool_ref_networks(proj_id))
+                    all_net_objs.extend(self._fip_pool_ref_networks(proj_id))
                 else:
                     project_nets = self._network_list_project(proj_id)
-                    all_nets.append(project_nets)
+                    all_net_objs.extend(project_nets)
 
         # prune phase
         for net_obj in all_net_objs:
