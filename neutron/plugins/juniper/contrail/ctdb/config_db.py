@@ -768,9 +768,19 @@ class DBInterface(object):
         return project_obj.get_floating_ip_pool_refs()
     #end _fip_pool_refs_project
 
+    def _network_list_shared(self):
+        ret_list = []
+        nets = self._network_list_project(project_id=None)
+        for net in nets:
+            if not net.get_is_shared():
+                continue
+            ret_list.append(net)
+        return ret_list
+    # end _network_list_shared
+ 
     # find networks of floating ip pools project has access to
     def _fip_pool_ref_networks(self, project_id):
-        ret_net_objs = []
+        ret_net_objs = self._network_list_shared()
 
         proj_fip_pool_refs = self._fip_pool_refs_project(project_id)
         if not proj_fip_pool_refs:
@@ -1795,7 +1805,7 @@ class DBInterface(object):
 
     # TODO request based on filter contents
     def network_list(self, context=None, filters=None):
-        ret_list = []
+        ret_dict = {}
 
         def _collect_without_prune(net_ids):
             for net_id in net_ids:
@@ -1803,7 +1813,7 @@ class DBInterface(object):
                     net_obj = self._network_read(net_id)
                     net_info = self._network_vnc_to_neutron(net_obj,
                                                         net_repr='LIST')
-                    ret_list.append(net_info)
+                    ret_dict[net_id] = net_info
                 except NoIdError:
                     pass
         #end _collect_without_prune
@@ -1824,7 +1834,7 @@ class DBInterface(object):
             # project-id is present
             if 'id' in filters:
                 # required networks are also specified,
-                # just read and populate ret_list
+                # just read and populate ret_dict
                 # prune is skipped because all_net_objs is empty
                 _collect_without_prune(filters['id'])
             else:
@@ -1837,7 +1847,7 @@ class DBInterface(object):
                         net_objs = self._network_list_project(p_id)
                     all_net_objs.extend(net_objs)
         elif filters and 'id' in filters:
-            # required networks are specified, just read and populate ret_list
+            # required networks are specified, just read and populate ret_dict
             # prune is skipped because all_net_objs is empty
             _collect_without_prune(filters['id'])
         elif filters and 'name' in filters:
@@ -1848,17 +1858,11 @@ class DBInterface(object):
             all_net_objs.extend(net_objs)
         elif filters and 'shared' in filters:
             if filters['shared'][0] == True:
-                nets = self._network_list_project(project_id=None)
+                nets = self._network_list_shared()
                 for net in nets:
-                    try:
-                        net_obj = self._virtual_network_read(net_id=net['uuid'])
-                        if not net_obj.is_shared:
-                            continue
-                        net_info = self._network_vnc_to_neutron(net_obj,
-                                                                net_repr='LIST')
-                    except NoIdError:
-                        continue
-                    ret_list.append(net_info)
+                    net_info = self._network_vnc_to_neutron(net,
+                                                            net_repr='LIST')
+                    ret_dict[net.uuid] = net_info
         else:
             # read all networks in all projects
             if context and not context.is_admin:
@@ -1876,6 +1880,8 @@ class DBInterface(object):
 
         # prune phase
         for net_obj in all_net_objs:
+            if net_obj.uuid in ret_dict:
+                continue
             net_fq_name = unicode(net_obj.get_fq_name())
             if not self._filters_is_present(filters, 'contrail:fq_name',
                                             net_fq_name):
@@ -1888,7 +1894,10 @@ class DBInterface(object):
                                                         net_repr='LIST')
             except NoIdError:
                 continue
-            ret_list.append(net_info)
+            ret_dict[net_obj.uuid] = net_info
+        ret_list = []
+        for net in ret_dict.values():
+            ret_list.append(net)
 
         return ret_list
     #end network_list
