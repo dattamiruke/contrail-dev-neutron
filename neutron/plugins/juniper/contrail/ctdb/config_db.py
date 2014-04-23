@@ -2642,7 +2642,7 @@ class DBInterface(object):
         # if ip address passed then use it
         ip_addr = None
         ip_obj = None
-        if 'fixed_ips' in port_q:
+        if port_q['fixed_ips'].__class__ is not object:
             if len(port_q['fixed_ips']) > 0:
                 # check if 'ip_address' key is present or not
                 # before accessing it.
