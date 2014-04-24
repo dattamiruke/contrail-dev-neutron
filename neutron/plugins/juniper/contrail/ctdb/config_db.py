@@ -161,7 +161,14 @@ class DBInterface(object):
             id = self._vnc_lib.obj_to_id(instance_obj)
             instance_obj = self._vnc_lib.virtual_machine_read(id=id)
         except NoIdError:  # instance doesn't exist, create it
-            instance_obj.uuid = instance_id
+            # check if instance_id is a uuid value or not
+            try:
+                uuid.UUID(instance_id)
+                instance_obj.uuid = instance_id
+            except ValueError:
+                # if instance_id is not a valid uuid, let
+                # virtual_machine_create generate uuid for the vm
+                pass
             self._vnc_lib.virtual_machine_create(instance_obj)
 
         return instance_obj
@@ -2636,13 +2643,17 @@ class DBInterface(object):
         ip_addr = None
         ip_obj = None
         if port_q['fixed_ips'].__class__ is not object:
-            ip_addr = port_q['fixed_ips'][0]['ip_address']
-            ip_name = '%s %s' % (net_id, ip_addr)
-            try:
-                ip_obj = self._instance_ip_read(fq_name=[ip_name])
-                ip_id = ip_obj.uuid
-            except Exception as e:
-                ip_obj = None
+            if len(port_q['fixed_ips']) > 0:
+                # check if 'ip_address' key is present or not
+                # before accessing it.
+                if 'ip_address' in port_q['fixed_ips'][0]:
+                    ip_addr = port_q['fixed_ips'][0]['ip_address']
+                    ip_name = '%s %s' % (net_id, ip_addr)
+                    try:
+                        ip_obj = self._instance_ip_read(fq_name=[ip_name])
+                        ip_id = ip_obj.uuid
+                    except Exception as e:
+                        ip_obj = None
 
         # create the object
         port_id = self._virtual_machine_interface_create(port_obj)
