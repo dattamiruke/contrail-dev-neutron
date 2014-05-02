@@ -2757,6 +2757,10 @@ class DBInterface(object):
             raise l3.L3PortInUse(port_id=port_id,
                 device_owner=constants.DEVICE_OWNER_ROUTER_INTF)
 
+        if port_obj.get_logical_router_back_refs():
+            raise l3.L3PortInUse(port_id=port_id,
+                device_owner=constants.DEVICE_OWNER_ROUTER_INTF)
+
         # release instance IP address
         iip_back_refs = getattr(port_obj, 'instance_ip_back_refs', None)
         if iip_back_refs:
