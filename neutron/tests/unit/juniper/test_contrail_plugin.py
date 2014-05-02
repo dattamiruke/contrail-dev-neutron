@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+import copy
 import datetime
 import sys
 import uuid
@@ -654,15 +656,528 @@ def fake_handle_network_requests(context, data):
     elif operation == 'READCOUNT':
        return fake_get_network_count()
 
+class FakeResources(object):
+    _store = {}
+    def __init__(self, res_type, addr_mgmt=None):
+        self._type = res_type
+        self._store[res_type] = {}
+        self._addr_mgmt = addr_mgmt
+
+    def _filters_is_present(self, filters, key_name, match_value):
+        if filters:
+            if key_name in filters:
+                try:
+                    filters[key_name].index(match_value)
+                except ValueError:  # not in requested list
+                    return False
+            #elif len(filters.keys()) == 1:
+            #    shared_val = filters.get('shared')
+            #    if shared_val and shared_val[0]:
+            #        return False
+
+        return True
+
+    def reset(self):
+        self._store[self._type] = {}
+        self._addr_mgmt = None
+
+    def do_operation(self, context, data):
+        operation = context['operation']
+
+        if operation == 'READ':
+           return self.read(id=data['id'])
+        elif operation == 'CREATE':
+           return self.create(data['resource'])
+        elif operation == 'UPDATE':
+           return self.update(data['id'], data['resource'])
+        elif operation == 'DELETE':
+           return self.delete(data['id'])
+        elif operation == 'READALL':
+           return self.list(data['filters'])
+        elif operation == 'READCOUNT':
+           return self.count(data['filters'])
+
+    def create(self, res_data):
+        res_id = res_data.get('id', str(uuid.uuid4()))
+        res_data['id'] = res_id
+        res_data['status'] = 'ACTIVE'
+        self._store[self._type][res_id] = copy.deepcopy(res_data)
+        mock_response = MockRequestsResponse(200, json.dumps(res_data))
+        return mock_response
+
+    def read(self, id):
+        res_data = self._store[self._type][id]
+        return MockRequestsResponse(200, json.dumps(res_data))
+
+    def update(self, id, res_data):
+        self._store[self._type][id].update(copy.deepcopy(res_data))
+        ret_data = self._store[self._type][id]
+        return MockRequestsResponse(200, json.dumps(ret_data))
+
+    def delete(self, id):
+        del self._store[self._type][id]
+        return MockRequestsResponse(200, json.dumps(''))
+
+    def list(self, filters):
+        resources = self._store[self._type]
+        ret_resources = []
+        for res_id in resources:
+            resource = resources[res_id]
+            if not self._filters_is_present(filters, 'admin_state_up',
+                                            resource.get('admin_state_up')):
+                continue
+            if not self._filters_is_present(filters, 'shared',
+                                            resource.get('shared')):
+                continue
+            if not self._filters_is_present(filters, 'ip_version',
+                                            resource.get('ip_version')):
+                continue
+            ret_resources.append(copy.deepcopy(resource))
+                                                  
+        return MockRequestsResponse(200, json.dumps(ret_resources))
+
+    def count(self, filters):
+        ret_resources = self._store[self._type]
+        retval = json.dumps({'count': len(ret_resources)})
+        return MockRequestsResponse(200, retval)
+
+class FakeNetworks(FakeResources):
+    def __init__(self, addr_mgmt):
+        super(FakeNetworks, self).__init__('network', addr_mgmt)
+
+    def _ports_on_network(self, network_id, network_owned=False):
+        ret_ports = []
+        for port_id in self._store['port']:
+            port = self._store['port'][port_id]
+            if port['network_id'] == network_id:
+                if (network_owned and 
+                    port['device_owner'] == 'network:dhcp'):
+                    ret_ports.append(port)
+                elif (not network_owned and 
+                      port['device_owner'] != 'network:dhcp'):
+                    ret_ports.append(port)
+
+        return ret_ports
+
+    def create(self, req_network_data):
+        network_data = copy.deepcopy(req_network_data)
+        network_data['subnets'] = []
+        response = super(FakeNetworks, self).create(network_data)
+        
+        return response
+
+    def update(self, id, req_network_data):
+        existing_network = self._store['network'][id]
+        if (req_network_data.get('shared') == False and
+            existing_network['shared'] == True):
+            ports_on_network = self._ports_on_network(id, False)
+            network_tenant_id = existing_network['tenant_id']
+            for port in ports_on_network:
+                if port['tenant_id'] != network_tenant_id:
+                    exc_info = {'type': 'InvalidSharedSetting',
+                                'name': existing_network['name']}
+                    return MockRequestsResponse(409, json.dumps(exc_info))
+
+        response = super(FakeNetworks, self).update(id, req_network_data)
+        if req_network_data.get('shared') != None:
+            for subnet_data in existing_network['subnets']:
+                subnet_dict = self._store['subnet'][subnet_data['id']]
+                subnet_dict['shared'] = req_network_data['shared']
+
+        return response
+
+    def delete(self, id):
+        non_network_owned_ports = self._ports_on_network(id, False)
+        if non_network_owned_ports:
+            exc_info = {'type': 'NetworkInUse',
+                        'network_id': id}
+            return MockRequestsResponse(409, json.dumps(exc_info))
+
+        network_owned_ports = self._ports_on_network(id, True)
+        for port in network_owned_ports:
+            del self._store['port'][port['id']]
+
+        return super(FakeNetworks, self).delete(id)
+
+    def list(self, filters):
+        return super(FakeNetworks, self).list(filters)
+
+class FakeSubnets(FakeResources):
+    def __init__(self, addr_mgmt):
+        super(FakeSubnets, self).__init__('subnet', addr_mgmt)
+
+    def _generate_gw_alloc_pools(self, cidr, gw):
+        alloc_pools = []
+        gateway_ip = None
+        if not gw or gw == '0.0.0.0':
+            if not gw:
+                gateway_ip = str(netaddr.IPNetwork(cidr).network + 1)
+            start_ip = str(netaddr.IPNetwork(cidr).network + 2)
+            end_ip = str(netaddr.IPNetwork(cidr).broadcast - 1)
+            alloc_pool = {'first_ip': start_ip,
+                          'last_ip': end_ip}
+            alloc_pools.append(alloc_pool)
+        else: # gateway specified
+            gateway_ip = gw
+            if netaddr.IPAddress(gw) not in netaddr.IPNetwork(cidr):
+                start_ip = str(netaddr.IPNetwork(cidr).network + 1)
+                end_ip = str(netaddr.IPNetwork(cidr).broadcast - 1)
+                alloc_pool = {'first_ip': start_ip,
+                              'last_ip': end_ip}
+                alloc_pools.append(alloc_pool)
+            else: # gateway in cidr
+                # no prefix pool if gw is first in cidr
+                if gw != str(netaddr.IPNetwork(cidr).network + 1):
+                    start_ip = str(netaddr.IPNetwork(cidr).network + 1)
+                    end_ip = str(netaddr.IPAddress(gw) - 1)
+                    alloc_pool = {'first_ip': start_ip,
+                                  'last_ip': end_ip}
+                    alloc_pools.append(alloc_pool)
+
+                # no suffix pool if gw is last in cidr
+                if gw != str(netaddr.IPNetwork(cidr).broadcast - 1):
+                    start_ip = str(netaddr.IPAddress(gw) + 1)
+                    end_ip = str(netaddr.IPNetwork(cidr).broadcast - 1)
+                    alloc_pool = {'first_ip': start_ip,
+                                  'last_ip': end_ip}
+                    alloc_pools.append(alloc_pool)
+    
+        return gateway_ip, alloc_pools
+    
+    def _validate_gw_alloc_pools(self, cidr, gw, alloc_pools):
+        if gw:
+            if gw == '0.0.0.0':
+                return True, None
+            else:
+                return True, gw
+
+        gateway_ip = str(netaddr.IPNetwork(cidr).network + 1)
+        for pool in alloc_pools:
+            if gateway_ip in netaddr.IPRange(pool['start'],
+                                             pool['end']):
+                exc_info = {'type': 'GatewayConflictWithAllocationPools',
+                            'pool': pool,
+                            'ip_address': gateway_ip}
+                return False, MockRequestsResponse(409, json.dumps(exc_info))
+
+        return True, gateway_ip
+
+    def _set_host_routes(self, req_host_routes, subnet_data):
+        subnet_data['routes'] = []
+        for host_route in req_host_routes or []:
+            route = {'destination': host_route['destination'],
+                     'nexthop': host_route['nexthop']}
+            subnet_data['routes'].append(route)
+
+    def _ports_on_subnet(self, subnet_id, network_owned=False):
+        ret_ports = []
+        for port_id in self._store['port']:
+            port = self._store['port'][port_id]
+            for fixed_ip_dict in port.get('fixed_ips') or []:
+                if fixed_ip_dict['subnet_id'] == subnet_id:
+                    if (network_owned and 
+                        port['device_owner'] == 'network:dhcp'):
+                        ret_ports.append(port)
+                    elif (not network_owned and 
+                          port['device_owner'] != 'network:dhcp'):
+                        ret_ports.append(port)
+
+        return ret_ports
+
+    def _ports_on_subnet_with_gateway_ip(self, subnet_id):
+        ret_ports = []
+        existing_subnet = self._store['subnet'][subnet_id]
+
+        non_network_owned_ports = self._ports_on_subnet(subnet_id, False)
+        for port in non_network_owned_ports:
+            for fixed_ip_dict in port['fixed_ips']:
+                address = fixed_ip_dict['ip_address']
+                if existing_subnet['gateway_ip'] == address:
+                    ret_ports.append(port)
+
+        return ret_ports
+ 
+    def create(self, req_subnet_data):
+        subnet_data = copy.deepcopy(req_subnet_data)
+
+        subnet_data['dns_nameservers'] = []
+        subnet_id = subnet_data.get('id', str(uuid.uuid4()))
+        subnet_data['id'] = subnet_id
+        network_id = subnet_data['network_id']
+        for dns_server in req_subnet_data['dns_nameservers'] or []:
+            dns = {'address': dns_server, 
+                   'subnet_id': subnet_id}
+            subnet_data['dns_nameservers'].append(dns)
+
+        self._set_host_routes(req_subnet_data['host_routes'], subnet_data)
+
+        subnet_data['shared'] = self._store['network'][network_id]['shared']
+
+        cidr = req_subnet_data['cidr']
+        gw = req_subnet_data.get('gateway_ip', None)
+        if not req_subnet_data['allocation_pools']:
+            gw, alloc_pools = self._generate_gw_alloc_pools(cidr, gw)
+            subnet_data['allocation_pools'] = alloc_pools
+            subnet_data['gateway_ip'] = gw
+        else: # alloc pools specified
+            alloc_pools = subnet_data['allocation_pools']
+            ok, retval = self._validate_gw_alloc_pools(cidr, gw, alloc_pools)
+            if not ok:
+                response = retval
+                return response
+
+            gw = retval
+            subnet_data['gateway_ip'] = gw
+            for pool in alloc_pools:
+                pool['first_ip'] = pool['start']
+                pool['last_ip'] = pool['end']
+                del pool['start']
+                del pool['end']
+            
+        response = super(FakeSubnets, self).create(subnet_data)
+        self._addr_mgmt.create_subnet(subnet_data)
+
+        self._store['network'][network_id]['subnets'].append(subnet_data)
+
+        return response
+
+    def read(self, id):
+        try:
+            return super(FakeSubnets, self).read(id)
+        except KeyError:
+            exc_info = {'type': 'SubnetNotFound',
+                        'id': id}
+            return MockRequestsResponse(404, json.dumps(exc_info))
+        
+
+    def update(self, id, req_subnet_data):
+        subnet_data = copy.deepcopy(req_subnet_data)
+
+        if ('gateway_ip' in subnet_data and 
+            self._ports_on_subnet_with_gateway_ip(id)):
+            exc_info = {'type': 'SubnetInUse',
+                        'id': id}
+            return MockRequestsResponse(409, json.dumps(exc_info))
+
+        if 'host_routes' in req_subnet_data:
+            self._set_host_routes(req_subnet_data['host_routes'], subnet_data)
+
+        if 'dns_nameservers' in req_subnet_data:
+            new_dns_nameservers = req_subnet_data['dns_nameservers']
+            subnet_data['dns_nameservers'] = []
+            for dns_server in new_dns_nameservers or []:
+                dns = {'address': dns_server, 
+                       'subnet_id': id}
+                subnet_data['dns_nameservers'].append(dns)
+
+        response = super(FakeSubnets, self).update(id, subnet_data)
+        self._addr_mgmt.update_subnet(subnet_data)
+
+        return response
+
+    def delete(self, id):
+        non_network_owned_ports = self._ports_on_subnet(id, False)
+        if self._ports_on_subnet(id):
+            exc_info = {'type': 'SubnetInUse',
+                        'id': id}
+            return MockRequestsResponse(409, json.dumps(exc_info))
+            
+        network_owned_ports = self._ports_on_subnet(id, True)
+        for port in network_owned_ports:
+            del self._store['port'][port['id']]
+
+        network_id = self._store['subnet'][id]['network_id']
+        rem_subnets = [sn for sn in self._store['network'][network_id]['subnets'] \
+                          if sn['id'] != id]
+        self._store['network'][network_id]['subnets'] = rem_subnets
+        self._addr_mgmt.delete_subnet(id)
+        response = super(FakeSubnets, self).delete(id)
+        
+        return response
+
+
+class FakePorts(FakeResources):
+    def __init__(self, addr_mgmt):
+        super(FakePorts, self).__init__('port', addr_mgmt)
+ 
+    def _ip_to_subnet_id(self, network_id, fixed_ip_dict):
+        if fixed_ip_dict.get('subnet_id'):
+            return (fixed_ip_dict['subnet_id'], fixed_ip_dict['ip_address'])
+
+        for subnet in self._store['network'][network_id]['subnets']:
+            if fixed_ip_dict['ip_address'] in netaddr.IPNetwork(subnet['cidr']):
+                return (subnet['id'], fixed_ip_dict['ip_address'])
+
+        return None, fixed_ip_dict['ip_address']
+
+    def create(self, req_port_data):
+        port_data = copy.deepcopy(req_port_data)
+        if not port_data.get('id'):
+            port_data['id'] = str(uuid.uuid4())
+
+        req_fixed_ips = port_data['fixed_ips']
+        if req_fixed_ips:
+            for fixed_ip_dict in req_fixed_ips:
+                if not self._addr_mgmt.is_ip_unique(fixed_ip_dict['subnet_id'],
+                                                    fixed_ip_dict['ip_address']):
+                    exc_info = {'type': 'IpAddressInUse',
+                                'network_id': port_data['network_id'],
+                                'ip_address': fixed_ip_dict['ip_address']}
+                    return MockRequestsResponse(409, json.dumps(exc_info))
+            for fixed_ip_dict in req_fixed_ips:
+                subnet_id = fixed_ip_dict['subnet_id']
+                address = fixed_ip_dict['ip_address']
+                self._addr_mgmt.create_ip(subnet_id, address, port_data['id'])
+        else:
+            port_data['fixed_ips'] = []
+            network_id = port_data['network_id']
+            subnets = self._store['network'][network_id]['subnets']
+            if subnets:
+                subnet_id, address = self._addr_mgmt.alloc_ip(network_id, 
+                                                         port_data['id'])
+                if address:
+                    self._addr_mgmt.create_ip(subnet_id, address, port_data['id'])
+                    port_data['fixed_ips'] = [ {'subnet_id': subnet_id,
+                                                'ip_address': address} ]
+                else:
+                    exc_info = {'type': 'IpAddressGenerationFailure',
+                                'network_id': network_id}
+                    return MockRequestsResponse(409, json.dumps(exc_info))
+
+        response = super(FakePorts, self).create(port_data)
+        return response
+
+    def update(self, id, req_port_data):
+        port_data = copy.deepcopy(req_port_data)
+        existing_port = self._store['port'][id]
+        
+        req_fixed_ips = port_data.get('fixed_ips')
+        if req_fixed_ips:
+            network_id = existing_port['network_id']
+            existing_ip_set = set([(e['subnet_id'], e['ip_address']) for e in existing_port['fixed_ips']])
+            new_ip_set = set([self._ip_to_subnet_id(network_id, n) for n in req_fixed_ips])
+            for ip_tuple in existing_ip_set - new_ip_set:
+                self._addr_mgmt.delete_ip(ip_tuple[0], ip_tuple[1], existing_port['id'])
+            for ip_tuple in new_ip_set - existing_ip_set:
+                self._addr_mgmt.create_ip(ip_tuple[0], ip_tuple[1], existing_port['id'])
+
+            port_ip_data = []
+            for ip_tuple in new_ip_set:
+                port_ip_data.append({'subnet_id':ip_tuple[0], 'ip_address':ip_tuple[1]})
+            port_data['fixed_ips'] = port_ip_data
+
+        response = super(FakePorts, self).update(id, port_data)
+        return response
+
+    def delete(self, id):
+        existing_port = self._store['port'][id]
+        response = super(FakePorts, self).delete(id)
+
+        for fixed_ips in existing_port['fixed_ips']:
+            self._addr_mgmt.delete_ip(fixed_ips['subnet_id'], fixed_ips['ip_address'], id)
+
+        return response
+
+    def list(self, filters):
+        if 'fixed_ips' in filters:
+            ret_ports = []
+            ports = [self._store['port'][id] for id in self._store['port']]
+            for port in ports:
+                for fixed_ip in port.get('fixed_ips', []):
+                    if (fixed_ip['subnet_id'] in filters['fixed_ips']['subnet_id'] and
+                        fixed_ip['ip_address'] in filters['fixed_ips']['ip_address']):
+                        ret_ports.append(port)
+            return MockRequestsResponse(200, json.dumps(ret_ports))
+
+        return super(FakePorts, self).list(filters)
+
+class FakeAddrMgmt(object):
+    def __init__(self):
+        self._subnet_dicts = {}
+        self._ip_dicts = {}
+
+    def create_subnet(self, subnet_data):
+        network_id = subnet_data['network_id']
+        subnet_id = subnet_data['id']
+        if subnet_id not in self._subnet_dicts:
+            self._subnet_dicts[subnet_id] = {}
+
+        alloc_pools = subnet_data['allocation_pools']
+        subnet_dict = self._subnet_dicts[subnet_id]
+        subnet_dict.update({'network_id': network_id,
+                            'id': subnet_id,
+                            'alloc_pools': alloc_pools,
+                            'used_addrs': [],
+                            'ip_to_port': {}})
+
+    def update_subnet(self, subnet_data):
+        pass
+
+    def delete_subnet(self, id):
+        pass
+
+    def _get_free_ip(self, pool, used_addrs):
+        for ip in netaddr.iter_iprange(pool['first_ip'], pool['last_ip']):
+            if str(ip) not in used_addrs:
+                return str(ip)
+
+        return None
+
+    def is_ip_unique(self, subnet_id, ip_address):
+        subnet_dict = self._subnet_dicts[subnet_id]
+        if ip_address in subnet_dict['ip_to_port']:
+            return False
+
+        return True
+
+    def alloc_ip(self, network_id, port_id):
+        subnet_dicts = [self._subnet_dicts[sn_id] for sn_id in self._subnet_dicts
+                              if self._subnet_dicts[sn_id]['network_id'] == network_id]
+        for subnet_dict in subnet_dicts:
+            for pool in subnet_dict['alloc_pools']:
+                address = self._get_free_ip(pool, subnet_dict['used_addrs'])
+                if address:
+                    return subnet_dict['id'], address
+
+        return None, None
+
+    def create_ip(self, subnet_id, address, port_id):
+        subnet_dict = self._subnet_dicts[subnet_id]
+        subnet_dict['used_addrs'].append(address)
+        subnet_dict['ip_to_port'][address] = port_id
+
+    def delete_ip(self, subnet_id, address, port_id):
+        subnet_dict = self._subnet_dicts[subnet_id]
+        subnet_dict['used_addrs'].remove(address)
+        del subnet_dict['ip_to_port'][address]
+
+fake_resources = {}
+addr_mgmt = None
+
+def initialize_fakes():
+    global fake_resources, addr_mgmt
+
+    addr_mgmt = FakeAddrMgmt()
+    fake_resources = {
+                      'network': FakeNetworks(addr_mgmt),
+                      'subnet': FakeSubnets(addr_mgmt),
+                      'port': FakePorts(addr_mgmt),
+                     }
+def reset_fakes():
+    global fake_resources
+    for type in fake_resources:
+        fake_resources[type].reset()
+
 def fake_requests_post(*args, **kwargs):
     postdata = json.loads(kwargs['data'])
     context = postdata['context']
     data = postdata['data']
 
-    api_type = context['type']
+    return fake_resources[context['type']].do_operation(context, data)
+    #api_type = context['type']
 
-    if api_type == 'network':
-       return fake_handle_network_requests(context, data)
+    #if api_type == 'network':
+    #   return fake_handle_network_requests(context, data)
     # Add more types here ...
 
 def fake_requests_get(*args, **kwargs):
@@ -758,410 +1273,221 @@ class JVContrailPluginTestCase(test_plugin.NeutronDbPluginV2TestCase):
 
 class TestContrailNetworks(test_plugin.TestNetworksV2,
                            JVContrailPluginTestCase):
+    def setUp(self):
+        initialize_fakes()
+        super(TestContrailNetworks, self).setUp()
 
-    # This test depends on port
-    def test_update_network_set_not_shared_single_tenant(self):
-        pass
-
-    # This test depends on port
-    def test_update_network_set_not_shared_other_tenant_returns_409(self):
-        pass
-
-    # This test depends on port
-    def test_update_network_set_not_shared_multi_tenants2_returns_409(self):
-        pass
-
-    # This test depends on port
-    def test_update_network_set_not_shared_multi_tenants_returns_409(self):
-        pass
-
-    # This test depends on port
-    def test_update_network_with_subnet_set_shared(self):
-        pass
-
-    # This test depends on subnet
-    def test_show_network_with_subnet(self):
-        pass
-
+    def tearDown(self):
+        super(TestContrailNetworks, self).tearDown()
+        reset_fakes()
 
 class TestContrailSubnetsV2(test_plugin.TestSubnetsV2,
                             JVContrailPluginTestCase):
+    def setUp(self):
+        initialize_fakes()
+        super(TestContrailSubnetsV2, self).setUp()
 
-    def test_create_subnet(self):
-        #First create virtual network without subnet and then
-        #create subnet to update given network.
-        plugin_obj = NeutronManager.get_plugin()
-        networks_req = {}
-        router_inst = RouterInstance()
-        network = {
-            'router:external': router_inst,
-            u'name': u'network1',
-            'admin_state_up': 'True',
-            'tenant_id': uuid.uuid4().hex.decode(),
-            'vpc:route_table': '',
-            'shared': False,
-            'port_security_enabled': True,
-            u'contrail:policys': [],
-        }
-
-        networks_req[u'network'] = network
-        context_obj = Context(network['tenant_id'])
-        #create project
-        if not GLOBALPROJECTS:
-            project_name = 'admin'
-            GLOBALPROJECTS.append(MockProject(name=project_name))
-
-        net = plugin_obj.create_network(context_obj, networks_req)
-
-        subnet_obj[u'subnet']['network_id'] = net['id']
-        subnet_dict = plugin_obj.create_subnet(context_obj, subnet_obj)
-        self.assertEqual(subnet_dict['cidr'],
-                         subnet_obj['subnet']['cidr'])
-
-    def test_delete_subnet(self):
-        #First create virtual network without subnet and then
-        #create subnet to update given network.
-        plugin_obj = NeutronManager.get_plugin()
-        networks_req = {}
-        router_inst = RouterInstance()
-        network = {
-            'router:external': router_inst,
-            u'name': u'network1',
-            'admin_state_up': 'True',
-            'tenant_id': uuid.uuid4().hex.decode(),
-            'vpc:route_table': '',
-            'shared': False,
-            'port_security_enabled': True,
-            u'contrail:policys': [],
-        }
-
-        networks_req[u'network'] = network
-        context_obj = Context(network['tenant_id'])
-        #create project
-        if not GLOBALPROJECTS:
-            project_name = 'admin'
-            GLOBALPROJECTS.append(MockProject(name=project_name))
-
-        net = plugin_obj.create_network(context_obj, networks_req)
-
-        subnet_obj[u'subnet']['network_id'] = net['id']
-        subnet_dict = plugin_obj.create_subnet(context_obj, subnet_obj)
-        subnet_id = subnet_dict['id']
-        plugin_obj.delete_subnet(context_obj, subnet_id)
-
-    def test_create_two_subnets(self):
-        ## - Quota exceeded
-        pass
-
-    def test_create_two_subnets_same_cidr_returns_400(self):
-        ## - implement pooling in Mock
-        pass
-
-    def test_create_2_subnets_overlapping_cidr_not_allowed_returns_400(self):
-        ## - implement pooling in Mock
-        pass
+    def tearDown(self):
+        super(TestContrailSubnetsV2, self).tearDown()
+        reset_fakes()
 
     def test_create_subnets_bulk_emulated_plugin_failure(self):
-        ## - 
         pass
-
     def test_create_subnet_bad_tenant(self):
-        ## - tenant id is string
-        pass
-
-    #def test_create_subnet_bad_pools(self):
-        ## - implement pooling in Mock
-    #    pass
-
-    def test_create_subnet_defaults(self):
-        self.skipTest("Plugin does not support Neutron allocation process")
-
-    def test_create_subnet_gw_values(self):
-        self.skipTest("Plugin does not support Neutron allocation process")
-
-    def test_create_subnet_default_gw_conflict_allocation_pool_returns_409(
-            self):
-        self.skipTest("Plugin does not support Neutron allocation process")
-
-    def test_create_subnet_overlapping_allocation_pools_returns_409(self):
-        ##
-        pass
-
-    def test_create_subnet_with_v6_allocation_pool(self):
-        ## - ipv6 ???
-        pass
-
-    def test_create_subnet_inconsistent_ipv6_cidrv4(self):
-        ## - ipv6 ???
-        pass
-
-    def test_create_subnet_inconsistent_ipv4_cidrv6(self):
-        ## - ipv6 ???
-        pass
-
-    def test_create_subnet_inconsistent_ipv4_gatewayv6(self):
-        ## - ipv6 ???
-        pass
-
-    def test_create_subnet_inconsistent_ipv6_gatewayv4(self):
-        ## - ipv6 ???
-        pass
-
-    def test_create_subnet_inconsistent_ipv6_dns_v4(self):
-        ## - ipv6 ???
-        pass
-
-    def test_create_subnet_inconsistent_ipv4_hostroute_dst_v6(self):
-        ## - ipv6 ???
-        pass
-
-    def test_create_subnet_inconsistent_ipv4_hostroute_np_v6(self):
-        ## - ipv6 ???
-        pass
-
-    def test_list_subnets(self):
-        ##
-        pass
-
-    def test_list_subnets_shared(self):
-        ##
-        pass
-
-    def test_list_subnets_with_parameter(self):
-        ##
-        pass
-
-    def test_list_subnets_with_pagination_emulated(self):
-        ## - takes time
-        pass
-
-    def test_list_subnets_with_pagination_reverse_emulated(self):
-        ##
-        pass
-
-    def test_list_subnets_with_sort_emulated(self):
-        ##
-        pass
-
-    def test_update_subnet_dns(self):
-        ##
-        pass
-
-    def test_update_subnet_dns_to_None(self):
-        ##
-        pass
-
-    def test_update_subnet_dns_with_too_many_entries(self):
-        ##
-        pass
-
-    def test_update_subnet_route(self):
-        ##
-        pass
-
-    def test_update_subnet_route_to_None(self):
-        ##
-        pass
-
-    def test_update_subnet_route_with_too_many_entries(self):
-        ##
-        pass
-
-    def test_update_subnet_gw_ip_in_use_returns_409(self):
-        ##
-        pass
-
-    def test_update_subnet_gateway_in_allocation_pool_returns_409(self):
-        self.skipTest("Plugin does not support Neutron allocation process")
-
-    def test_update_subnet_gw_outside_cidr_force_on_returns_400(self):
-        ##
-        pass
-
-    def test_update_subnet_adding_additional_host_routes_and_dns(self):
-        ##
-        pass
-
-    def test_update_subnet_inconsistent_ipv4_gatewayv6(self):
-        ##
-        pass
-
-    def test_update_subnet_inconsistent_ipv6_gatewayv4(self):
-        ##
-        pass
-
-    def test_update_subnet_inconsistent_ipv4_dns_v6(self):
-        ##
-        pass
-
-    def test_update_subnet_inconsistent_ipv6_hostroute_dst_v4(self):
-        ##
-        pass
-
-    def test_update_subnet_inconsistent_ipv6_hostroute_np_v4(self):
-        ##
-        pass
-
-    def test_delete_subnet_port_exists_owned_by_other(self):
-        ##
-        pass
-
-    def test_delete_subnet_port_exists_owned_by_network(self):
-        ##
         pass
 
 
 class TestContrailPortsV2(test_plugin.TestPortsV2,
                           JVContrailPluginTestCase):
+    def setUp(self):
+        initialize_fakes()
+        super(TestContrailPortsV2, self).setUp()
 
-    def test_create_port_json(self):
-        ##
-        pass
-
-    def test_create_port_bad_tenant(self):
-        ## - 403 vs 404
-        pass
-
-    def test_create_port_public_network(self):
-        ## - tenant id is a name
-        pass
-
-    def test_create_port_public_network_with_ip(self):
-        ##
-        pass
-
-    def test_create_ports_bulk_emulated(self):
-        ##
-        pass
-
-    def test_create_ports_bulk_wrong_input(self):
-        ##
-        pass
-
-    def test_create_port_as_admin(self):
-        ##
-        pass
-
-    def test_list_ports(self):
-        ##
-        pass
-
-    def test_list_ports_filtered_by_fixed_ip(self):
-        ##
-        pass
-
-    def test_list_ports_public_network(self):
-        ##
-        pass
-
-    def test_list_ports_with_pagination_emulated(self):
-        ##
-        pass
-
-    def test_list_ports_with_pagination_reverse_emulated(self):
-        ##
-        pass
-
-    def test_list_ports_with_sort_emulated(self):
-        ##
-        pass
-
-    def test_delete_port(self):
-        ## - tenant id is a name ???
-        pass
-
-    def test_delete_port_public_network(self):
-        ## - tenant id is a name ???
-        pass
-
-    def test_update_port_update_ip(self):
-        ##
-        pass
-
-    def test_update_port_delete_ip(self):
-        ##
-        pass
+    def tearDown(self):
+        super(TestContrailPortsV2, self).tearDown()
+        reset_fakes()
 
     def test_update_port_update_ip_address_only(self):
-        ##
-        pass
-
-    def test_update_port_update_ips(self):
-        ##
-        pass
-
-    def test_update_port_add_additional_ip(self):
-        ##
-        pass
-
-    def test_update_port_not_admin(self):
-        ##
-        pass
-
-    def test_delete_network_if_port_exists(self):
-        ##
-        pass
-
-    def test_no_more_port_exception(self):
-        ##
-        pass
-
-    def test_requested_duplicate_mac(self):
-        ##
-        pass
-
-    def test_mac_generation(self):
-        ##
-        pass
-
-    def test_mac_generation_4octet(self):
-        ##
         pass
 
     def test_mac_exhaustion(self):
-        ##
         pass
 
-    def test_requested_duplicate_ip(self):
-        ##
+    def test_create_port_bad_tenant(self):
         pass
 
-    def test_requested_subnet_delete(self):
-        ##
+    def test_recycle_ip_address_on_exhausted_allocation_pool(self):
         pass
-
-    def test_requested_subnet_id(self):
-        ##
+    def test_mac_generation_4octet(self):
         pass
-
-    def test_requested_subnet_id_not_on_network(self):
-        ##
-        pass
-
-    def test_requested_subnet_id_v4_and_v6(self):
-        ##
-        pass
-
-    def test_range_allocation(self):
-        self.skipTest("Plugin does not support Neutron allocation process")
-
-    def test_requested_invalid_fixed_ips(self):
-        ##
-        pass
-
-    def test_requested_split(self):
-        ## - valid IP Address ???
-        pass
-
     def test_requested_ips_only(self):
-        ##
         pass
-
-    def test_max_fixed_ips_exceeded(self):
-        ##
+    def test_update_port_add_additional_ip(self):
         pass
-
-    def test_update_max_fixed_ips_exceeded(self):
-        ##
+    def test_mac_generation(self):
         pass
+    def test_range_allocation(self):
+        pass
+    def test_update_fixed_ip_lease_expiration_invalid_address(self):
+        pass
+    def test_requested_subnet_id_v4_and_v6(self):
+        pass
+    def test_requested_duplicate_mac(self):
+        pass
+    def test_recycle_ip_address_in_allocation_pool(self):
+        pass
+    def test_requested_subnet_id(self):
+        pass
+    def test_recycle_ip_address_outside_allocation_pool(self):
+        pass
+#   def test_create_port_json(self):
+#       ##
+#       pass
+#
+#   def test_create_port_bad_tenant(self):
+#       ## - 403 vs 404
+#       pass
+#
+#   def test_create_port_public_network(self):
+#       ## - tenant id is a name
+#       pass
+#
+#   def test_create_port_public_network_with_ip(self):
+#       ##
+#       pass
+#
+#   def test_create_ports_bulk_emulated(self):
+#       ##
+#       pass
+#
+#   def test_create_ports_bulk_wrong_input(self):
+#       ##
+#       pass
+#
+#   def test_create_port_as_admin(self):
+#       ##
+#       pass
+#
+#   def test_list_ports(self):
+#       ##
+#       pass
+#
+#   def test_list_ports_filtered_by_fixed_ip(self):
+#       ##
+#       pass
+#
+#   def test_list_ports_public_network(self):
+#       ##
+#       pass
+#
+#   def test_list_ports_with_pagination_emulated(self):
+#       ##
+#       pass
+#
+#   def test_list_ports_with_pagination_reverse_emulated(self):
+#       ##
+#       pass
+#
+#   def test_list_ports_with_sort_emulated(self):
+#       ##
+#       pass
+#
+#   def test_delete_port(self):
+#       ## - tenant id is a name ???
+#       pass
+#
+#   def test_delete_port_public_network(self):
+#       ## - tenant id is a name ???
+#       pass
+#
+#   def test_update_port_update_ip(self):
+#       ##
+#       pass
+#
+#   def test_update_port_delete_ip(self):
+#       ##
+#       pass
+#
+#   def test_update_port_update_ip_address_only(self):
+#       ##
+#       pass
+#
+#   def test_update_port_update_ips(self):
+#       ##
+#       pass
+#
+#   def test_update_port_add_additional_ip(self):
+#       ##
+#       pass
+#
+#   def test_update_port_not_admin(self):
+#       ##
+#       pass
+#
+#   def test_delete_network_if_port_exists(self):
+#       ##
+#       pass
+#
+#   def test_no_more_port_exception(self):
+#       ##
+#       pass
+#
+#   def test_requested_duplicate_mac(self):
+#       ##
+#       pass
+#
+#   def test_mac_generation(self):
+#       ##
+#       pass
+#
+#   def test_mac_generation_4octet(self):
+#       ##
+#       pass
+#
+#   def test_mac_exhaustion(self):
+#       ##
+#       pass
+#
+#   def test_requested_duplicate_ip(self):
+#       ##
+#       pass
+#
+#   def test_requested_subnet_delete(self):
+#       ##
+#       pass
+#
+#   def test_requested_subnet_id(self):
+#       ##
+#       pass
+#
+#   def test_requested_subnet_id_not_on_network(self):
+#       ##
+#       pass
+#
+#   def test_requested_subnet_id_v4_and_v6(self):
+#       ##
+#       pass
+#
+#   def test_range_allocation(self):
+#       self.skipTest("Plugin does not support Neutron allocation process")
+#
+#   def test_requested_invalid_fixed_ips(self):
+#       ##
+#       pass
+#
+#   def test_requested_split(self):
+#       ## - valid IP Address ???
+#       pass
+#
+#   def test_requested_ips_only(self):
+#       ##
+#       pass
+#
+#   def test_max_fixed_ips_exceeded(self):
+#       ##
+#       pass
+#
+#   def test_update_max_fixed_ips_exceeded(self):
+#       ##
+#       pass
 
