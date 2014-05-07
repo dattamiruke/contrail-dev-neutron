@@ -16,6 +16,7 @@
 #
 # @author: Hampapur Ajay, Praneet Bachheti, Rudra Rugge, Atul Moghe
 
+import copy
 import logging
 import ConfigParser
 from pprint import pformat
@@ -34,6 +35,7 @@ from neutron.openstack.common import log as logging
 
 from oslo.config import cfg
 from httplib2 import Http
+import netaddr
 import re
 import requests
 import string
@@ -261,7 +263,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
         url_path = "%s/%s" % (self.PLUGIN_URL_PREFIX, obj_name)
         response = self._relay_request('POST', url_path, data=data)
-        return json.loads(response.content)
+        return response.status_code, json.loads(response.content)
 
     def _encode_context(self, context, operation, apitype):
         cdict = {}
@@ -284,225 +286,503 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         resource_dict['fields'] = fields
         return resource_dict
 
-    # Network API handlers
-    def create_network(self, context, network):
-        """
-        Creates a new Virtual Network, and assigns it
-        a symbolic name.
-        """
-        if network['network']['router:external'] == attr.ATTR_NOT_SPECIFIED:
-            del network['network']['router:external']
-
-        context_dict = self._encode_context(context, 'CREATE', 'network')
-        network_dict = self._encode_resource(resource=network['network'])
-
-        data = json.dumps({'context':context_dict, 'data':network_dict})
-
-        url_path = "%s/network" % (self.PLUGIN_URL_PREFIX)
-        response = self._relay_request('POST', url_path, data=data)
-
-        net_info = json.loads(response.content)
-
-        # Verify transformation is conforming to api
-        net_dict = self._make_network_dict(net_info['q_api_data'])
-
-        net_dict.update(net_info['q_extra_data'])
-
-        LOG.debug("create_network(): " + pformat(net_dict) + "\n")
-        return net_dict
-
-    def get_network(self, context, net_id, fields=None):
-        """
-        Get the attributes of a particular Virtual Network.
-        """
-        context_dict = self._encode_context(context, 'READ', 'network')
-        network_dict = self._encode_resource(resource_id=net_id, fields=fields)
-
-        data = json.dumps({'context':context_dict, 'data':network_dict})
-
-        url_path = "%s/network" % (self.PLUGIN_URL_PREFIX)
-        response = self._relay_request('POST', url_path, data=data)
-
-        net_info = json.loads(response.content)
-
-        # Verify transformation is conforming to api
-        if not fields:
-            # should return all fields
-            net_dict = self._make_network_dict(net_info['q_api_data'],
-                                               fields)
-            net_dict.update(net_info['q_extra_data'])
-        else:
-            net_dict = net_info['q_api_data']
-
-        LOG.debug("get_network(): " + pformat(net_dict))
-        return self._fields(net_dict, fields)
-
-    def update_network(self, context, net_id, network):
-        """
-        Updates the attributes of a particular Virtual Network.
-        """
-        context_dict = self._encode_context(context, 'UPDATE', 'network')
-        network_dict = self._encode_resource(resource_id=net_id,
-                                            resource=network['network'])
-
-        data = json.dumps({'context':context_dict, 'data':network_dict})
-
-        url_path = "%s/network" % (self.PLUGIN_URL_PREFIX)
-        response = self._relay_request('POST', url_path, data=data)
-
-        net_info = json.loads(response.content)
-
-        # Verify transformation is conforming to api
-        net_dict = self._make_network_dict(net_info['q_api_data'])
-
-        net_dict.update(net_info['q_extra_data'])
-
-        LOG.debug("update_network(): " + pformat(net_dict))
-        return net_dict
-
-    def delete_network(self, context, net_id):
-        """
-        Deletes the network with the specified network identifier
-        belonging to the specified tenant.
-        """
-        context_dict = self._encode_context(context, 'DELETE', 'network')
-        network_dict = self._encode_resource(resource_id=net_id)
-
-        data = json.dumps({'context':context_dict, 'data':network_dict})
-
-        url_path = "%s/network" % (self.PLUGIN_URL_PREFIX)
-        self._relay_request('POST', url_path, data=data)
-
-    def get_networks(self, context, filters=None, fields=None):
-        """
-        Get the list of Virtual Networks.
-        """
-        context_dict = self._encode_context(context, 'READALL', 'network')
-        network_dict = self._encode_resource(filters=filters, fields=fields)
-
-        data = json.dumps({'context':context_dict, 'data':network_dict})
-
-        url_path = "%s/network" % (self.PLUGIN_URL_PREFIX)
-        response = self._relay_request('POST', url_path, data=data)
-
-        nets_info = json.loads(response.content)
-        nets_dicts = []
-        for n_info in nets_info:
-            # verify transformation is conforming to api
-            n_dict = self._make_network_dict(n_info['q_api_data'], fields)
-
-            n_dict.update(n_info['q_extra_data'])
-            nets_dicts.append(n_dict)
-
-        LOG.debug(
-            "get_networks(): filters: " + pformat(filters) + " data: "
-            + pformat(nets_dicts))
-        return nets_dicts
-
-    def get_networks_count(self, context, filters=None):
-        """
-        Get the count of Virtual Network.
-        """
-        context_dict = self._encode_context(context, 'READCOUNT', 'network')
-        network_dict = self._encode_resource(filters=filters)
-
-        data = json.dumps({'context':context_dict, 'data':network_dict})
-
-        url_path = "%s/network" % (self.PLUGIN_URL_PREFIX)
-        response = self._relay_request('POST', url_path, data=data)
-
-        nets_count = json.loads(response.content)
-        LOG.debug("get_networks_count(): filters: " + pformat(filters) + " data: " + str(nets_count['count']))
-        return nets_count['count']
-
-    # Subnet API handlers
-    def _transform_response(self, info=None, info_list=None, fields=None, obj_name=None):
+    def _transform_response(self, status_code, info=None, info_list=None, fields=None, obj_name=None):
         funcname = "_make_" + obj_name + "_dict"
         func = getattr(self, funcname)
 
         info_dicts = []
         if info:
-            info_dicts = func(info['q_api_data'], fields)
-            info_dicts.update(info['q_extra_data'])
+            info_dicts = func(status_code, info, fields)
         else: 
             for entry in info_list:
-                info_dict = func(entry['q_api_data'], fields)
-                info_dict.update(entry['q_extra_data'])
-
+                info_dict = func(status_code, entry, fields)
                 info_dicts.append(info_dict)
+
         return info_dicts
+
+    def _create_resource(self, res_type, context, res_data):
+        res_dict = self._encode_resource(resource=res_data[res_type])
+        status_code, res_info = self._request_backend(context, res_dict, res_type, 'CREATE')
+        res_dicts = self._transform_response(status_code, info=res_info, obj_name=res_type)
+
+        return res_dicts
+
+    def _get_resource(self, res_type, context, id, fields):
+        res_dict = self._encode_resource(resource_id=id, fields=fields)
+        status_code, res_info = self._request_backend(context, res_dict, res_type, 'READ')
+        res_dicts = self._transform_response(status_code, info=res_info, fields=fields, 
+                                             obj_name=res_type)
+
+        return res_dicts
+
+    def _update_resource(self, res_type, context, id, res_data):
+        res_dict = self._encode_resource(resource_id=id, resource=res_data[res_type])
+        status_code, res_info = self._request_backend(context, res_dict, res_type, 'UPDATE')
+        res_dicts = self._transform_response(status_code, info=res_info, obj_name=res_type)
+
+        return res_dicts
+
+    def _delete_resource(self, res_type, context, id):
+        res_dict = self._encode_resource(resource_id=id)
+        status_code, res_info = self._request_backend(context, res_dict, res_type, 'DELETE')
+        return status_code, res_info
+
+    def _list_resource(self, res_type, context, filters, fields):
+        res_dict = self._encode_resource(filters=filters, fields=fields)
+        status_code, res_info = self._request_backend(context, res_dict, res_type, 'READALL')
+        res_dicts = self._transform_response(status_code, info_list=res_info, fields=fields,
+                                             obj_name=res_type)
+
+        return res_dicts
+
+    def _count_resource(self, res_type, context, filters):
+        res_dict = self._encode_resource(filters=filters)
+        status_code, res_count = self._request_backend(context, res_dict, res_type,
+            'READCOUNT')
+
+        return res_count
+
+    # Network API handlers
+    def _make_network_dict(self, status_code, entry, fields):
+        if status_code == 200:
+            return super(NeutronPluginContrailCoreV2, self)._make_network_dict(entry, fields)
+
+        if entry['type'] == 'InvalidSharedSetting':
+            raise exc.InvalidSharedSetting(network=entry['name'])
+        if entry['type'] == 'NetworkInUse':
+            raise exc.NetworkInUse(net_id=entry['id'])
+
+    def _get_network(self, context, id):
+        network_dict = self._get_resource('network', context, id, None)
+        return network_dict
+
+    def create_network(self, context, network):
+        """
+        Creates a new Virtual Network, and assigns it
+        a symbolic name.
+        """
+        tenant_id = self._get_tenant_id_for_create(context, network['network'])
+
+        plugin_network = copy.deepcopy(network)
+        if network['network']['router:external'] == attr.ATTR_NOT_SPECIFIED:
+            del plugin_network['network']['router:external']
+
+        network_dicts = self._create_resource('network', context,
+                                              plugin_network)
+
+        LOG.debug("create_network(): " + pformat(network_dicts) + "\n")
+        return network_dicts
+
+    def get_network(self, context, network_id, fields=None):
+        """
+        Get the attributes of a particular Virtual Network.
+        """
+        network_dicts = self._get_resource('network', context, network_id, fields)
+
+        LOG.debug("get_network(): " + pformat(network_dicts))
+        return self._fields(network_dicts, fields)
+
+    def update_network(self, context, network_id, network):
+        """
+        Updates the attributes of a particular Virtual Network.
+        """
+        plugin_network = copy.deepcopy(network)
+        network_dicts = self._update_resource('network', context, network_id,
+                                              plugin_network)
+
+        LOG.debug("update_network(): " + pformat(network_dicts))
+        return network_dicts
+
+    def delete_network(self, context, network_id):
+        """
+        Deletes the network with the specified network identifier
+        belonging to the specified tenant.
+        """
+        status_code, msg = self._delete_resource('network', context, network_id)
+
+        LOG.debug("delete_network(): %s" % (network_id))
+        if status_code == 200:
+            return 
+        elif status_code == 409:
+            raise exc.NetworkInUse(net_id=network_id)
+
+    def get_networks(self, context, filters=None, fields=None):
+        """
+        Get the list of Virtual Networks.
+        """
+        network_dicts = self._list_resource('network', context, filters, fields)
+
+        LOG.debug(
+            "get_networks(): filters: " + pformat(filters) + " data: "
+            + pformat(network_dicts))
+        return network_dicts
+
+    def get_networks_count(self, context, filters=None):
+        """
+        Get the count of Virtual Network.
+        """
+        networks_count = self._count_resource('network', context, filters)
+
+        LOG.debug("get_networks_count(): filters: " + pformat(filters) + " data: " + str(networks_count['count']))
+        return networks_count['count']
+
+    # Subnet API handlers
+    def _make_subnet_dict(self, status_code, entry, fields):
+        if status_code == 200:
+            return super(NeutronPluginContrailCoreV2, self)._make_subnet_dict(entry, fields)
+
+        if entry['type'] == 'SubnetInUse':
+            raise exc.SubnetInUse(subnet_id=entry['id'])
+        if entry['type'] == 'GatewayConflictWithAllocationPools':
+            pool_range = netaddr.IPRange(entry['pool']['start'],
+                                         entry['pool']['end'])
+            gateway_ip = entry['ip_address']
+            raise exc.GatewayConflictWithAllocationPools(pool=pool_range,
+                                                         ip_address=gateway_ip)
+        if entry['type'] == 'SubnetNotFound':
+            raise exc.SubnetNotFound(subnet_id=entry['id'])
+
+    def _get_subnet(self, context, id):
+        subnet_dict = self._get_resource('subnet', context, id, None)
+        return subnet_dict
+
+    def _get_all_subnets(self, context):
+        all_networks = self.get_networks(context)
+        all_subnets = []
+        for network in all_networks:
+            subnets = [self._get_subnet(context, id) for id in network['subnets']]
+            all_subnets.extend(subnets)
+
+        return all_subnets
+
+    def _validate_subnet_cidr(self, context, network, new_subnet_cidr):
+        """Validate the CIDR for a subnet.
+
+        Verifies the specified CIDR does not overlap with the ones defined
+        for the other subnets specified for this network, or with any other
+        CIDR if overlapping IPs are disabled.
+        """
+        new_subnet_ipset = netaddr.IPSet([new_subnet_cidr])
+        if cfg.CONF.allow_overlapping_ips:
+            subnet_ids = network['subnets']
+            subnet_list = [self._get_subnet(context, id) for id in subnet_ids]
+        else:
+            subnet_list = self._get_all_subnets(context)
+
+        for subnet in subnet_list:
+            if (netaddr.IPSet([subnet['cidr']]) & new_subnet_ipset):
+                # don't give out details of the overlapping subnet
+                err_msg = (_("Requested subnet with cidr: %(cidr)s for "
+                             "network: %(network_id)s overlaps with another "
+                             "subnet") %
+                           {'cidr': new_subnet_cidr,
+                            'network_id': network['id']})
+                LOG.error(_("Validation for CIDR: %(new_cidr)s failed - "
+                            "overlaps with subnet %(subnet_id)s "
+                            "(CIDR: %(cidr)s)"),
+                          {'new_cidr': new_subnet_cidr,
+                           'subnet_id': subnet['id'],
+                           'cidr': subnet['cidr']})
+                raise exc.InvalidInput(error_message=err_msg)
 
     def create_subnet(self, context, subnet):
         """
         Creates a new subnet, and assigns it a symbolic name.
         """
+        tenant_id = self._get_tenant_id_for_create(context, subnet['subnet'])
+
+        plugin_subnet = copy.deepcopy(subnet)
         if subnet['subnet']['dns_nameservers'] == attr.ATTR_NOT_SPECIFIED:
-            subnet['subnet']['dns_nameservers'] = None
+            plugin_subnet['subnet']['dns_nameservers'] = None
         if subnet['subnet']['allocation_pools'] == attr.ATTR_NOT_SPECIFIED:
-            subnet['subnet']['allocation_pools'] = None
-        if subnet['subnet']['host_routes'] == attr.ATTR_NOT_SPECIFIED:
-            subnet['subnet']['host_routes'] = None
+            plugin_subnet['subnet']['allocation_pools'] = None
         if subnet['subnet']['gateway_ip'] == attr.ATTR_NOT_SPECIFIED:
-            subnet['subnet']['gateway_ip'] = None
-        subnet_dict = self._encode_resource(resource=subnet['subnet'])
-        subnet_info = self._request_backend(context, subnet_dict, 'subnet', 'CREATE')
-        subnet_dict = self._transform_response(info=subnet_info, obj_name='subnet')
-        LOG.debug("create_subnet(): " + pformat(subnet_dict) + "\n")
-        return subnet_dict
+            plugin_subnet['subnet']['gateway_ip'] = None
+        if subnet['subnet']['gateway_ip'] == None:
+            plugin_subnet['subnet']['gateway_ip'] = '0.0.0.0'
+        if subnet['subnet']['host_routes'] == attr.ATTR_NOT_SPECIFIED:
+            plugin_subnet['subnet']['host_routes'] = None
+        elif (len(subnet['subnet']['host_routes']) > 
+              cfg.CONF.max_subnet_host_routes):
+                raise exc.HostRoutesExhausted(
+                    subnet_id=subnet['subnet'].get('id', _('new subnet')),
+                    quota=cfg.CONF.max_subnet_host_routes)
+
+        self._validate_subnet(context, plugin_subnet['subnet'])
+        if plugin_subnet['subnet']['allocation_pools']:
+            self._validate_allocation_pools(plugin_subnet['subnet']['allocation_pools'],
+                                            plugin_subnet['subnet']['cidr'])
+        #import pdb; pdb.set_trace()
+        if (plugin_subnet['subnet']['gateway_ip'] and 
+            plugin_subnet['subnet']['allocation_pools']):
+            self._validate_gw_out_of_pools(plugin_subnet['subnet']['gateway_ip'],
+                                           plugin_subnet['subnet']['allocation_pools'])
+        network = self._get_network(context, plugin_subnet['subnet']['network_id'])
+        self._validate_subnet_cidr(context, network, plugin_subnet['subnet']['cidr'])
+
+        subnet_dicts = self._create_resource('subnet', context, plugin_subnet)
+        LOG.debug("create_subnet(): " + pformat(subnet_dicts) + "\n")
+
+        return subnet_dicts
 
     def get_subnet(self, context, subnet_id, fields=None):
         """
-        Get the attributes of a particular Virtual Network.
+        Get the attributes of a particular subnet.
         """
-        subnet_dict = self._encode_resource(resource_id=subnet_id, fields=fields)
-        subnet_info = self._request_backend(context, subnet_dict, 'subnet', 'READ')
-        subnet_dict = self._transform_response(info=subnet_info, fields=fields, 
-                                               obj_name='subnet')
-        LOG.debug("get_subnet(): " + pformat(subnet_dict))
-        return subnet_dict
+        subnet_dicts = self._get_resource('subnet', context, subnet_id, fields)
+
+        LOG.debug("get_subnet(): " + pformat(subnet_dicts))
+        return subnet_dicts
 
     def update_subnet(self, context, subnet_id, subnet):
         """
         Updates the attributes of a particular subnet.
         """
-        subnet_dict = self._encode_resource(resource_id=subnet_id, resource=subnet['subnet'])
-        subnet_info = self._request_backend(context, subnet_dict, 'subnet', 'UPDATE')
-        subnet_dict = self._transform_response(info=subnet_info, obj_name='subnet')
-        LOG.debug("update_subnet(): " + pformat(subnet_dict))
-        return subnet_dict
+        plugin_subnet = copy.deepcopy(subnet)
+        existing_subnet = self._get_subnet(context, subnet_id)
+        # for self._validate these fields are needed
+        plugin_subnet['subnet']['ip_version'] = existing_subnet['ip_version']
+        plugin_subnet['subnet']['cidr'] = existing_subnet['cidr']
+        plugin_subnet['subnet']['id'] = existing_subnet['id']
+        self._validate_subnet(context, plugin_subnet['subnet'])
+        if ('gateway_ip' in plugin_subnet['subnet'] and 
+            plugin_subnet['subnet']['gateway_ip']):
+            self._validate_gw_out_of_pools(plugin_subnet['subnet']['gateway_ip'],
+                                           existing_subnet['allocation_pools'])
+
+
+        subnet_dicts = self._update_resource('subnet', context, subnet_id,
+                                             plugin_subnet)
+
+        LOG.debug("update_subnet(): " + pformat(subnet_dicts))
+        return subnet_dicts
 
     def delete_subnet(self, context, subnet_id):
         """
         Deletes the subnet with the specified subnet identifier
         belonging to the specified tenant.
         """
-        subnet_dict = self._encode_resource(resource_id=subnet_id)
-        self._request_backend(context, subnet_dict, 'subnet', 'DELETE')
+        status_code, msg = self._delete_resource('subnet', context, subnet_id)
+
         LOG.debug("delete_subnet(): %s" % (subnet_id))
+        if status_code == 200:
+            return
+        elif status_code == 409:
+            raise exc.SubnetInUse(subnet_id=subnet_id)
 
     def get_subnets(self, context, filters=None, fields=None):
         """
         Get the list of subnets
         """
-        subnets_dict = self._encode_resource(filters=filters, fields=fields)
-        subnets_info = self._request_backend(context, subnets_dict, 'subnet', 'READALL')
-        subnets_dict = self._transform_response(info_list=subnets_info, fields=fields,
-                                                obj_name='subnet')
+        subnet_dicts = self._list_resource('subnet', context, filters, fields)
+
         LOG.debug(
             "get_subnets(): filters: " + pformat(filters) + " data: "
-            + pformat(subnets_dict))
-        return subnets_dict
+            + pformat(subnet_dicts))
+        return subnet_dicts
 
     def get_subnets_count(self, context, filters=None):
         """
         Get the count of subnets.
         """
-        subnet_dict = self._encode_resource(filters=filters)
-        subnets_count = self._request_backend(context, subnet_dict, 'subnet',
-            'READCOUNT')
+        subnets_count = self._count_resource('subnet', context, filters)
+
         LOG.debug("get_subnets_count(): filters: " + pformat(filters) +
                   " data: " + str(subnets_count['count']))
         return subnets_count['count']
+
+    def _make_port_dict(self, status_code, entry, fields):
+        if status_code == 200:
+            port_dict = super(NeutronPluginContrailCoreV2, self)._make_port_dict(
+                entry, fields)
+            self._process_portbindings_create_and_update(None, entry,
+                                                         port_dict)
+            return port_dict
+
+        if entry['type'] == 'IpAddressInUse':
+            raise exc.IpAddressInUse(net_id=entry['network_id'],
+                                     ip_address=entry['ip_address'])
+        if entry['type'] == 'IpAddressGenerationFailure':
+            raise exc.IpAddressGenerationFailure(net_id=entry['network_id'])
+
+    def _get_port(self, context, id):
+        port_dict = self._get_resource('port', context, id, None)
+        return port_dict
+
+    def _test_fixed_ips_for_port(self, context, network_id, fixed_ips):
+        """Test fixed IPs for port.
+
+        Check that configured subnets are valid prior to allocating any
+        IPs. Include the subnet_id in the result if only an IP address is
+        configured.
+
+        :raises: InvalidInput, IpAddressInUse
+        """
+        fixed_ip_set = []
+        for fixed in fixed_ips:
+            found = False
+            if 'subnet_id' not in fixed:
+                if 'ip_address' not in fixed:
+                    msg = _('IP allocation requires subnet_id or ip_address')
+                    raise exc.InvalidInput(error_message=msg)
+
+                filter = {'network_id': [network_id]}
+                subnets = self.get_subnets(context, filters=filter)
+                for subnet in subnets:
+                    if super(NeutronPluginContrailCoreV2, self)._check_subnet_ip(subnet['cidr'],
+                                                          fixed['ip_address']):
+                        found = True
+                        subnet_id = subnet['id']
+                        break
+                if not found:
+                    msg = _('IP address %s is not a valid IP for the defined '
+                            'networks subnets') % fixed['ip_address']
+                    raise exc.InvalidInput(error_message=msg)
+            else:
+                subnet = self._get_subnet(context, fixed['subnet_id'])
+                if subnet['network_id'] != network_id:
+                    msg = (_("Failed to create port on network %(network_id)s"
+                             ", because fixed_ips included invalid subnet "
+                             "%(subnet_id)s") %
+                           {'network_id': network_id,
+                            'subnet_id': fixed['subnet_id']})
+                    raise exc.InvalidInput(error_message=msg)
+                subnet_id = subnet['id']
+
+            if 'ip_address' in fixed:
+                # Ensure that the IP is valid on the subnet
+                if (not found and
+                    not super(NeutronPluginContrailCoreV2, self)._check_subnet_ip(
+                        subnet['cidr'], fixed['ip_address'])):
+                    msg = _('IP address %s is not a valid IP for the defined '
+                            'subnet') % fixed['ip_address']
+                    raise exc.InvalidInput(error_message=msg)
+
+                fixed_ip_set.append({'subnet_id': subnet_id,
+                                     'ip_address': fixed['ip_address']})
+            else:
+                fixed_ip_set.append({'subnet_id': subnet_id})
+        if len(fixed_ip_set) > cfg.CONF.max_fixed_ips_per_port:
+            msg = _('Exceeded maximim amount of fixed ips per port')
+            raise exc.InvalidInput(error_message=msg)
+        return fixed_ip_set
+
+    def _update_ips_for_port(self, context, network_id, port_id, original_ips,
+                             new_ips):
+        """Add or remove IPs from the port."""
+        ips = []
+        # These ips are still on the port and haven't been removed
+        prev_ips = []
+
+        # the new_ips contain all of the fixed_ips that are to be updated
+        if len(new_ips) > cfg.CONF.max_fixed_ips_per_port:
+            msg = _('Exceeded maximim amount of fixed ips per port')
+            raise exc.InvalidInput(error_message=msg)
+
+        # Remove all of the intersecting elements
+        for original_ip in original_ips[:]:
+            for new_ip in new_ips[:]:
+                if ('ip_address' in new_ip and
+                    original_ip['ip_address'] == new_ip['ip_address']):
+                    original_ips.remove(original_ip)
+                    new_ips.remove(new_ip)
+                    prev_ips.append(original_ip)
+
+        # Check if the IP's to add are OK
+        self._test_fixed_ips_for_port(context, network_id, new_ips)
+
+        return new_ips, prev_ips
+
+    def create_port(self, context, port):
+        """
+        Creates a port on the specified Virtual Network.
+        """
+        tenant_id = self._get_tenant_id_for_create(context, port['port'])
+
+        plugin_port = copy.deepcopy(port)
+        if port['port']['port_security_enabled'] == attr.ATTR_NOT_SPECIFIED:
+            plugin_port['port']['port_security_enabled'] = None
+        if port['port']['binding:host_id'] == attr.ATTR_NOT_SPECIFIED:
+            plugin_port['port']['binding:host_id'] = None
+        if port['port']['mac_address'] == attr.ATTR_NOT_SPECIFIED:
+            plugin_port['port']['mac_address'] = None
+        if port['port']['binding:profile'] == attr.ATTR_NOT_SPECIFIED:
+            plugin_port['port']['binding:profile'] = None
+        if port['port']['fixed_ips'] == attr.ATTR_NOT_SPECIFIED:
+            plugin_port['port']['fixed_ips'] = None
+        if port['port']['security_groups'] == attr.ATTR_NOT_SPECIFIED:
+            plugin_port['port']['security_groups'] = None
+
+        if plugin_port['port']['fixed_ips']:
+            self._test_fixed_ips_for_port(context,
+                                          plugin_port['port']['network_id'],
+                                          plugin_port['port']['fixed_ips'])
+
+        port_dicts = self._create_resource('port', context, plugin_port)
+        LOG.debug("create_port(): " + pformat(port_dicts) + "\n")
+
+        return port_dicts
+
+    def get_port(self, context, port_id, fields=None):
+        """
+        Get the attributes of a particular port.
+        """
+        port_dicts = self._get_resource('port', context, port_id, fields)
+
+        LOG.debug("get_port(): " + pformat(port_dicts))
+        return port_dicts
+
+    def update_port(self, context, port_id, port):
+        """
+        Updates the attributes of a port on the specified Virtual Network.
+        """
+        plugin_port = copy.deepcopy(port)
+ 
+        if 'fixed_ips' in plugin_port['port']:
+            original = self._get_port(context, port_id)
+            added_ips, prev_ips = self._update_ips_for_port(
+                context, original['network_id'], port_id,
+                original['fixed_ips'], plugin_port['port']['fixed_ips'])
+            plugin_port['port']['fixed_ips'] = prev_ips + added_ips
+
+        port_dicts = self._update_resource('port', context, port_id,
+                                           plugin_port)
+
+        LOG.debug("update_port(): " + pformat(port_dicts))
+        return port_dicts
+
+    def delete_port(self, context, port_id):
+        """
+        Deletes a port on a specified Virtual Network,
+        if the port contains a remote interface attachment,
+        the remote interface is first un-plugged and then the port
+        is deleted.
+        """
+        self._delete_resource('port', context, port_id)
+
+        LOG.debug("delete_port(): %s" % (port_id))
+
+    def get_ports(self, context, filters=None, fields=None):
+        """
+        Retrieves all port identifiers belonging to the
+        specified Virtual Network.
+        """
+        port_dicts = self._list_resource('port', context, filters, fields)
+
+        LOG.debug(
+            "get_ports(): filters: " + pformat(filters) + " data: "
+            + pformat(port_dicts))
+        return port_dicts
+
+    def get_ports_count(self, context, filters=None):
+        """
+        Get the count of ports.
+        """
+        ports_count = self._count_resource('port', context, filters)
+
+        LOG.debug("get_ports_count(): filters: " + pformat(filters) +
+                  " data: " + str(ports_count['count']))
+        return ports_count['count']
 
     def _make_router_dict(self, router, fields=None,
                           process_extensions=True):
@@ -766,125 +1046,6 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             LOG.debug("get_floatingips_count(): filters: " +
                       pformat(filters) + " data: " + str(floatingips_count))
             return floatingips_count
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    # Port API handlers
-    def create_port(self, context, port):
-        """
-        Creates a port on the specified Virtual Network.
-        """
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            port_info = cfgdb.port_create(port['port'])
-
-            # verify transformation is conforming to api
-            port_dict = self._make_port_dict(port_info['q_api_data'])
-            self._process_portbindings_create_and_update(context,
-                                                     port['port'],
-                                                     port_dict)
-
-            port_dict.update(port_info['q_extra_data'])
-
-            LOG.debug("create_port(): " + pformat(port_dict))
-            return port_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    def get_port(self, context, port_id, fields=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            port_info = cfgdb.port_read(port_id)
-
-            # verify transformation is conforming to api
-            port_dict = self._make_port_dict(port_info['q_api_data'], fields)
-            self._process_portbindings_create_and_update(context,
-                                                     port_info,
-                                                     port_dict)
-
-            port_dict.update(port_info['q_extra_data'])
-
-            LOG.debug("get_port(): " + pformat(port_dict))
-            return self._fields(port_dict, fields)
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    def update_port(self, context, port_id, port):
-        """
-        Updates the attributes of a port on the specified Virtual Network.
-        """
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            port_info = cfgdb.port_update(port_id, port['port'])
-
-            # verify transformation is conforming to api
-            port_dict = self._make_port_dict(port_info['q_api_data'])
-            self._process_portbindings_create_and_update(context,
-                                                     port['port'],
-                                                     port_info)
-
-            port_dict.update(port_info['q_extra_data'])
-
-            LOG.debug("update_port(): " + pformat(port_dict))
-            return port_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    def delete_port(self, context, port_id):
-        """
-        Deletes a port on a specified Virtual Network,
-        if the port contains a remote interface attachment,
-        the remote interface is first un-plugged and then the port
-        is deleted.
-        """
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            cfgdb.port_delete(port_id)
-            LOG.debug("delete_port(): " + pformat(port_id))
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    def get_ports(self, context, filters=None, fields=None):
-        """
-        Retrieves all port identifiers belonging to the
-        specified Virtual Network.
-        """
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            ports_info = cfgdb.port_list(context, filters)
-
-            ports_dicts = []
-            for p_info in ports_info:
-                # verify transformation is conforming to api
-                p_dict = self._make_port_dict(p_info['q_api_data'], fields)
-                self._process_portbindings_create_and_update(context,
-                                                         p_info,
-                                                         p_dict)
-
-                if not fields:
-                    p_dict.update(p_info['q_extra_data'])
-                ports_dicts.append(p_dict)
-
-            LOG.debug(
-                "get_ports(): filter: " + pformat(filters) + 'data: '
-                + pformat(ports_dicts))
-            return ports_dicts
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    def get_ports_count(self, context, filters=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            ports_count = cfgdb.port_count(filters)
-            LOG.debug("get_ports_count(): filter: " + pformat(filters) +
-                      " data: " + str(ports_count))
-            return ports_count
         except Exception as e:
             cgitb.Hook(format="text").handle(sys.exc_info())
             raise e
