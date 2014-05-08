@@ -263,7 +263,8 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
         url_path = "%s/%s" % (self.PLUGIN_URL_PREFIX, obj_name)
         response = self._relay_request('POST', url_path, data=data)
-        return response.status_code, json.loads(response.content)
+        if response.content:
+            return response.status_code, json.loads(response.content)
 
     def _encode_context(self, context, operation, apitype):
         cdict = {}
@@ -324,8 +325,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
     def _delete_resource(self, res_type, context, id):
         res_dict = self._encode_resource(resource_id=id)
-        status_code, res_info = self._request_backend(context, res_dict, res_type, 'DELETE')
-        return status_code, res_info
+        self._request_backend(context, res_dict, res_type, 'DELETE')
 
     def _list_resource(self, res_type, context, filters, fields):
         res_dict = self._encode_resource(filters=filters, fields=fields)
@@ -784,7 +784,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                   " data: " + str(ports_count['count']))
         return ports_count['count']
 
-    def _make_router_dict(self, router, fields=None,
+    def _make_router_dict(self, status_code, router, fields=None,
                           process_extensions=True):
         res = {'id': router['id'],
                'name': router['name'],
@@ -810,104 +810,61 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         Creates a new Logical Router, and assigns it
         a symbolic name.
         """
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            router_info = cfgdb.router_create(router['router'])
+        plugin_router = copy.deepcopy(router)
 
-            # verify transformation is conforming to api
-            router_dict = self._make_router_dict(router_info['q_api_data'])
+        router_dicts = self._create_resource('router', context, plugin_router)
+        LOG.debug("create_router(): " + pformat(router_dicts) + "\n")
 
-            router_dict.update(router_info['q_extra_data'])
+        return router_dicts
 
-            LOG.debug("create_router(): " + pformat(router_dict) + "\n")
-            return router_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    def get_router(self, context, id, fields=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            router_info = cfgdb.router_read(id, fields)
-
-            # verify transformation is conforming to api
-            if not fields:
-                # should return all fields
-                router_dict = self._make_router_dict(router_info['q_api_data'],
-                                                     fields)
-                router_dict.update(router_info['q_extra_data'])
-            else:
-                router_dict = router_info['q_api_data']
-
-            LOG.debug("get_router(): " + pformat(router_dict))
-            return self._fields(router_dict, fields)
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    def update_router(self, context, rtr_id, router):
+    def get_router(self, context, router_id, fields=None):
         """
-        Updates the attributes of a particular Logical Router.
+        Get the attributes of a router
         """
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            router_info = cfgdb.router_update(rtr_id, router['router'])
+        router_dicts = self._get_resource('router', context, router_id, fields)
 
-            # verify transformation is conforming to api
-            router_dict = self._make_router_dict(router_info['q_api_data'])
+        LOG.debug("get_router(): " + pformat(router_dicts))
+        return router_dicts
 
-            router_dict.update(router_info['q_extra_data'])
-
-            LOG.debug("update_router(): " + pformat(router_dict))
-            return router_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    def delete_router(self, context, rtr_id):
+    def update_router(self, context, router_id, router):
         """
-        Deletes the network with the specified router identifier
-        belonging to the specified tenant.
+        Updates the attributes of a router
         """
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            cfgdb.router_delete(rtr_id)
-            LOG.debug("delete_router(): " + pformat(rtr_id))
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        plugin_router = copy.deepcopy(router)
+        router_dicts = self._update_resource('router', context, router_id,
+                                             plugin_router)
+
+        LOG.debug("update_router(): " + pformat(router_dicts))
+        return router_dicts
+
+    def delete_router(self, context, router_id):
+        """
+        Deletes a router
+        """
+        self._delete_resource('router', context, router_id)
+
+        LOG.debug("delete_router(): %s" % (router_id))
 
     def get_routers(self, context, filters=None, fields=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            rtrs_info = cfgdb.router_list(filters)
+        """
+        Retrieves all router identifiers
+        """
+        router_dicts = self._list_resource('router', context, filters, fields)
 
-            rtrs_dicts = []
-            for r_info in rtrs_info:
-                # verify transformation is conforming to api
-                r_dict = self._make_router_dict(r_info['q_api_data'], fields)
-
-                r_dict.update(r_info['q_extra_data'])
-                rtrs_dicts.append(r_dict)
-
-            LOG.debug(
-                "get_routers(): filters: " + pformat(filters) + " data: "
-                + pformat(rtrs_dicts))
-            return rtrs_dicts
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        LOG.debug(
+            "get_routers(): filters: " + pformat(filters) + " data: "
+            + pformat(router_dicts))
+        return router_dicts
 
     def get_routers_count(self, context, filters=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            rtrs_count = cfgdb.router_count(filters)
-            LOG.debug("get_routers_count(): filters: " + pformat(filters) +
-                      " data: " + str(rtrs_count))
-            return rtrs_count
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        """
+        Get the count of routers
+        """
+        routers_count = self._count_resource('router', context, filters)
+
+        LOG.debug("get_routers_count(): filters: " + pformat(filters) +
+                  " data: " + str(routers_count['count']))
+        return routers_count['count']
 
     def add_router_interface(self, context, router_id, interface_info):
         if not interface_info:
@@ -951,7 +908,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             raise e
 
     # Floating IP API handlers
-    def _make_floatingip_dict(self, floatingip, fields=None):
+    def _make_floatingip_dict(self, status_code, floatingip, fields=None):
         res = {'id': floatingip['id'],
                'tenant_id': floatingip['tenant_id'],
                'floating_ip_address': floatingip['floating_ip_address'],
@@ -962,93 +919,64 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         return self._fields(res, fields)
 
     def create_floatingip(self, context, floatingip):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            fip_info = cfgdb.floatingip_create(floatingip['floatingip'])
+        """
+        Creates a floating IP.
+        """
+        plugin_fip = copy.deepcopy(floatingip)
 
-            # verify transformation is conforming to api
-            fip_dict = self._make_floatingip_dict(fip_info['q_api_data'])
+        fip_dicts = self._create_resource('floatingip', context, plugin_fip)
+        LOG.debug("create_floatingip(): " + pformat(fip_dicts) + "\n")
 
-            fip_dict.update(fip_info['q_extra_data'])
-
-            LOG.debug("create_floatingip(): " + pformat(fip_dict))
-            return fip_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        return fip_dicts
 
     def update_floatingip(self, context, fip_id, floatingip):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            fip_info = cfgdb.floatingip_update(fip_id,
-                                               floatingip['floatingip'])
+        """
+        Updates the attributes of a floating IP
+        """
+        plugin_fip = copy.deepcopy(floatingip)
+        fip_dicts = self._update_resource('floatingip', context, fip_id,
+                                          plugin_fip)
 
-            # verify transformation is conforming to api
-            fip_dict = self._make_floatingip_dict(fip_info['q_api_data'])
+        LOG.debug("update_floatingip(): " + pformat(fip_dicts))
+        return fip_dicts
 
-            fip_dict.update(fip_info['q_extra_data'])
+    def get_floatingip(self, context, fip_id, fields=None):
+        """
+        Get the attributes of a floating ip.
+        """
+        fip_dicts = self._get_resource('floatingip', context, fip_id, fields)
 
-            LOG.debug("update_floatingip(): " + pformat(fip_dict))
-            return fip_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    def get_floatingip(self, context, id, fields=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            fip_info = cfgdb.floatingip_read(id)
-
-            # verify transformation is conforming to api
-            fip_dict = self._make_floatingip_dict(fip_info['q_api_data'])
-
-            fip_dict.update(fip_info['q_extra_data'])
-
-            LOG.debug("get_floatingip(): " + pformat(fip_dict))
-            return fip_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        LOG.debug("get_floatingip(): " + pformat(fip_dicts))
+        return fip_dicts
 
     def delete_floatingip(self, context, fip_id):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            cfgdb.floatingip_delete(fip_id)
-            LOG.debug("delete_floating(): " + pformat(fip_id))
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        """
+        Deletes a floating IP
+        """
+        self._delete_resource('floatingip', context, fip_id)
+
+        LOG.debug("delete_floatingip(): %s" % (fip_id))
 
     def get_floatingips(self, context, filters=None, fields=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            fips_info = cfgdb.floatingip_list(context, filters)
+        """
+        Retrieves all floating ips identifiers
+        """
+        fip_dicts = self._list_resource('floatingip', context, filters, fields)
 
-            fips_dicts = []
-            for fip_info in fips_info:
-                # verify transformation is conforming to api
-                fip_dict = self._make_floatingip_dict(fip_info['q_api_data'])
-
-                fip_dict.update(fip_info['q_extra_data'])
-                fips_dicts.append(fip_dict)
-
-            LOG.debug("get_floatingips(): filters: " + pformat(filters) +
-                      "data: " +pformat(fips_dicts))
-            return fips_dicts
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        LOG.debug(
+            "get_floatingips(): filters: " + pformat(filters) + " data: "
+            + pformat(fip_dicts))
+        return fip_dicts
 
     def get_floatingips_count(self, context, filters=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            floatingips_count = cfgdb.floatingip_count(context, filters)
-            LOG.debug("get_floatingips_count(): filters: " +
-                      pformat(filters) + " data: " + str(floatingips_count))
-            return floatingips_count
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        """
+        Get the count of floating IPs.
+        """
+        fips_count = self._count_resource('floatingip', context, filters)
+
+        LOG.debug("get_floatingips_count(): filters: " + pformat(filters) +
+                  " data: " + str(fips_count['count']))
+        return fips_count['count']
 
     def plug_interface(self, tenant_id, net_id, port_id, remote_interface_id):
         """
@@ -1251,7 +1179,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             raise e
 
     # Security Group handlers
-    def _make_security_group_rule_dict(self, security_group_rule, fields=None):
+    def _make_security_group_rule_dict(self, status_code, security_group_rule, fields=None):
         res = {'id': security_group_rule['id'],
                'tenant_id': security_group_rule['tenant_id'],
                'security_group_id': security_group_rule['security_group_id'],
@@ -1265,7 +1193,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
         return self._fields(res, fields)
 
-    def _make_security_group_dict(self, security_group, fields=None):
+    def _make_security_group_dict(self, status_code, security_group, fields=None):
         res = {'id': security_group['id'],
                'name': security_group['name'],
                'tenant_id': security_group['tenant_id'],
@@ -1275,155 +1203,99 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         return self._fields(res, fields)
 
     def create_security_group(self, context, security_group):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            sg_info = cfgdb.security_group_create(
-                security_group['security_group'])
+        """
+        Creates a Security Group.
+        """
+        plugin_sg = copy.deepcopy(security_group)
 
-            # verify transformation is conforming to api
-            sg_dict = self._make_security_group_dict(sg_info['q_api_data'])
+        sg_dicts = self._create_resource('security_group', context, plugin_sg)
+        LOG.debug("create_security_group(): " + pformat(sg_dicts) + "\n")
 
-            sg_dict.update(sg_info['q_extra_data'])
+        return sg_dicts
 
-            LOG.debug("create_security_group(): " + pformat(sg_dict))
-            return sg_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+    def get_security_group(self, context, sg_id, fields=None):
+        """
+        Get the attributes of a security group.
+        """
+        sg_dicts = self._get_resource('security_group', context, sg_id, fields)
+
+        LOG.debug("get_security_group(): " + pformat(sg_dicts))
+        return sg_dicts
 
     def update_security_group(self, context, sg_id, security_group):
         """
-        Updates the attributes of a particular Security Group.
+        Updates the attributes of a security group
         """
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            sg_info = cfgdb.security_group_update(sg_id, security_group['security_group'])
+        plugin_sg = copy.deepcopy(security_group)
+        sg_dicts = self._update_resource('security_group', context, sg_id,
+                                          plugin_sg)
 
-            # verify transformation is conforming to api
-            sg_dict = self._make_security_group_dict(sg_info['q_api_data'])
+        LOG.debug("update_security_group(): " + pformat(sg_dicts))
+        return sg_dicts
 
-            sg_dict.update(sg_info['q_extra_data'])
+    def delete_security_group(self, context, sg_id):
+        """
+        Deletes a security group
+        """
+        self._delete_resource('security_group', context, sg_id)
 
-            LOG.debug("update_security_group(): " + pformat(sg_dict))
-            return sg_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    def delete_security_group(self, context, id):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            cfgdb.security_group_delete(id)
-            LOG.debug("delete_security_group(): " + pformat(id))
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        LOG.debug("delete_security_group(): %s" % (sg_id))
 
     def get_security_groups(self, context, filters=None, fields=None,
                             sorts=None, limit=None, marker=None,
                             page_reverse=False):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            security_groups_info = cfgdb.security_group_list(context, filters)
+        """
+        Retrieves all security group identifiers
+        """
+        sg_dicts = self._list_resource('security_group', context,
+                                       filters, fields)
 
-            security_groups_dicts = []
-            for sg_info in security_groups_info:
-                # verify transformation is conforming to api
-                sg_dict = self._make_security_group_dict(sg_info['q_api_data'],
-                                                         fields)
-
-                sg_dict.update(sg_info['q_extra_data'])
-                security_groups_dicts.append(sg_dict)
-
-            LOG.debug(
-                "get_security_groups(): filter: " + pformat(filters)
-                + 'data: ' + pformat(security_groups_dicts))
-            return security_groups_dicts
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    def get_security_group(self, context, id, fields=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            sg_info = cfgdb.security_group_read(id)
-
-            # verify transformation is conforming to api
-            sg_dict = self._make_security_group_dict(sg_info['q_api_data'],
-                                                     fields)
-
-            sg_dict.update(sg_info['q_extra_data'])
-
-            LOG.debug("get_security_group(): " + pformat(sg_dict))
-            return self._fields(sg_dict, fields)
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        LOG.debug(
+            "get_security_groups(): filters: " + pformat(filters) + " data: "
+            + pformat(sg_dicts))
+        return sg_dicts
 
     def create_security_group_rule(self, context, security_group_rule):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            sgr_info = cfgdb.security_group_rule_create(
-                security_group_rule['security_group_rule'])
+        """
+        Creates a security group rule
+        """
+        plugin_sg_rule = copy.deepcopy(security_group_rule)
 
-            # verify transformation is conforming to api
-            sgr_dict = self._make_security_group_rule_dict(
-                sgr_info['q_api_data'])
-            sgr_dict.update(sgr_info['q_extra_data'])
+        sg_rule_dicts = self._create_resource('security_group_rule', context,
+                                              plugin_sg_rule)
+        LOG.debug("create_security_group_rule(): " + 
+                  pformat(sg_rule_dicts) + "\n")
 
-            LOG.debug("create_security_group_rule(): " + pformat(sgr_dict))
-            return sgr_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        return sg_rule_dicts
 
-    def delete_security_group_rule(self, context, id):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            cfgdb.security_group_rule_delete(id)
-            LOG.debug("delete_security_group_rule(): " + pformat(id))
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+    def delete_security_group_rule(self, context, sg_rule_id):
+        """
+        Deletes a security group rule
+        """
+        self._delete_resource('security_group_rule', context, sg_rule_id)
+
+        LOG.debug("delete_security_group_rule(): %s" % (sg_rule_id))
+
+    def get_security_group_rule(self, context, sg_rule_id, fields=None):
+        """
+        Get the attributes of a security group rule
+        """
+        sg_rule_dicts = self._get_resource('security_group_rule', context,
+                                           sg_rule_id, fields)
+
+        LOG.debug("get_security_group_rule(): " + pformat(sg_rule_dicts))
+        return sg_rule_dicts
 
     def get_security_group_rules(self, context, filters=None, fields=None,
                                  sorts=None, limit=None, marker=None,
                                  page_reverse=False):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            security_group_rules_info = cfgdb.security_group_rule_list(filters)
+        """
+        Retrieves all security group rules
+        """
+        sg_rule_dicts = self._list_resource('security_group_rule', context,
+                                            filters, fields)
 
-            security_group_rules_dicts = []
-            for sgr_info in security_group_rules_info:
-                for sgr in sgr_info:
-                    # verify transformation is conforming to api
-                    sgr_dict = self._make_security_group_rule_dict(
-                        sgr['q_api_data'], fields)
-                    sgr_dict.update(sgr['q_extra_data'])
-                    security_group_rules_dicts.append(sgr_dict)
-
-            LOG.debug(
-                "get_security_group_rules(): filter: " + pformat(filters) +
-                'data: ' + pformat(security_group_rules_dicts))
-            return security_group_rules_dicts
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    def get_security_group_rule(self, context, id, fields=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            sgr_info = cfgdb.security_group_rule_read(id)
-
-            # verify transformation is conforming to api
-            sgr_dict = {}
-            if sgr_info != {}:
-                sgr_dict = self._make_security_group_rule_dict(
-                    sgr_info['q_api_data'], fields)
-                sgr_dict.update(sgr_info['q_extra_data'])
-
-            LOG.debug("get_security_group_rule(): " + pformat(sgr_dict))
-            return self._fields(sgr_dict, fields)
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        LOG.debug(
+            "get_security_group_rules(): filters: " + pformat(filters)
+            + " data: " + pformat(sg_rule_dicts))
+        return sg_rule_dicts
