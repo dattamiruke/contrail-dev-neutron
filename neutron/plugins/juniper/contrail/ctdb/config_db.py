@@ -3072,7 +3072,7 @@ class DBInterface(object):
                 # TODO implement same for name specified in filter
                 if not self._filters_is_present(filters, 'id', sg_obj.uuid):
                     continue
-                sgr_info = self.security_group_rules_read(sg_obj.uuid)
+                sgr_info = self.security_group_rules_read(sg_obj.uuid, sg_obj)
                 if sgr_info:
                     ret_list.append(sgr_info)
 
