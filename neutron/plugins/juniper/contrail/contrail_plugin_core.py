@@ -271,6 +271,8 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         cdict['user_id'] = getattr(context, 'user_id', '')
         if context.roles:
             cdict['roles'] = context.roles
+        if context.tenant:
+            cdict['tenant'] = context.tenant
         cdict['is_admin'] = getattr(context, 'is_admin', False)
         cdict['operation'] = operation
         cdict['type'] = apitype
@@ -293,10 +295,10 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
         info_dicts = []
         if info:
-            info_dicts = func(status_code, info, fields)
+            info_dicts = func(info, status_code, fields)
         else: 
             for entry in info_list:
-                info_dict = func(status_code, entry, fields)
+                info_dict = func(entry, status_code, fields)
                 info_dicts.append(info_dict)
 
         return info_dicts
@@ -343,7 +345,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         return res_count
 
     # Network API handlers
-    def _make_network_dict(self, status_code, entry, fields):
+    def _make_network_dict(self, entry, status_code=None, fields=None):
         if status_code == 200:
             return super(NeutronPluginContrailCoreV2, self)._make_network_dict(entry, fields)
 
@@ -427,7 +429,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         return networks_count['count']
 
     # Subnet API handlers
-    def _make_subnet_dict(self, status_code, entry, fields):
+    def _make_subnet_dict(self, entry, status_code=None, fields=None):
         if status_code == 200:
             return super(NeutronPluginContrailCoreV2, self)._make_subnet_dict(entry, fields)
 
@@ -591,7 +593,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                   " data: " + str(subnets_count['count']))
         return subnets_count['count']
 
-    def _make_port_dict(self, status_code, entry, fields):
+    def _make_port_dict(self, entry, status_code=None, fields=None):
         if status_code == 200:
             port_dict = super(NeutronPluginContrailCoreV2, self)._make_port_dict(
                 entry, fields)
@@ -784,7 +786,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                   " data: " + str(ports_count['count']))
         return ports_count['count']
 
-    def _make_router_dict(self, status_code, router, fields=None,
+    def _make_router_dict(self, router, status_code=None, fields=None,
                           process_extensions=True):
         res = {'id': router['id'],
                'name': router['name'],
@@ -908,7 +910,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             raise e
 
     # Floating IP API handlers
-    def _make_floatingip_dict(self, status_code, floatingip, fields=None):
+    def _make_floatingip_dict(self, floatingip, status_code=None, fields=None):
         res = {'id': floatingip['id'],
                'tenant_id': floatingip['tenant_id'],
                'floating_ip_address': floatingip['floating_ip_address'],
@@ -1179,7 +1181,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             raise e
 
     # Security Group handlers
-    def _make_security_group_rule_dict(self, status_code, security_group_rule, fields=None):
+    def _make_security_group_rule_dict(self, security_group_rule, status_code=None, fields=None):
         res = {'id': security_group_rule['id'],
                'tenant_id': security_group_rule['tenant_id'],
                'security_group_id': security_group_rule['security_group_id'],
@@ -1193,7 +1195,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
         return self._fields(res, fields)
 
-    def _make_security_group_dict(self, status_code, security_group, fields=None):
+    def _make_security_group_dict(self, security_group, status_code=None, fields=None):
         res = {'id': security_group['id'],
                'name': security_group['name'],
                'tenant_id': security_group['tenant_id'],
