@@ -2132,6 +2132,8 @@ class DBInterface(object):
                 proj_id = None
             net_objs = self._network_list_project(proj_id)
             all_net_objs.extend(net_objs)
+            net_objs = self._network_list_shared()
+            all_net_objs.extend(net_objs)
 
         for net_obj in all_net_objs:
             ipam_refs = net_obj.get_network_ipam_refs()
@@ -3072,7 +3074,7 @@ class DBInterface(object):
                 # TODO implement same for name specified in filter
                 if not self._filters_is_present(filters, 'id', sg_obj.uuid):
                     continue
-                sgr_info = self.security_group_rules_read(sg_obj.uuid)
+                sgr_info = self.security_group_rules_read(sg_obj.uuid, sg_obj)
                 if sgr_info:
                     ret_list.append(sgr_info)
 
