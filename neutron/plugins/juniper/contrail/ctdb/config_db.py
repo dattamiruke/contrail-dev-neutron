@@ -2132,6 +2132,8 @@ class DBInterface(object):
                 proj_id = None
             net_objs = self._network_list_project(proj_id)
             all_net_objs.extend(net_objs)
+            net_objs = self._network_list_shared()
+            all_net_objs.extend(net_objs)
 
         for net_obj in all_net_objs:
             ipam_refs = net_obj.get_network_ipam_refs()
