@@ -1215,7 +1215,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                'name': security_group['name'],
                'tenant_id': security_group['tenant_id'],
                'description': security_group.get('description')}
-        res['security_group_rules'] = [self._make_security_group_rule_dict(status_code, r)
+        res['security_group_rules'] = [self._make_security_group_rule_dict(r, status_code)
                                        for r in security_group.get('rules', [])]
         return self._fields(res, fields)
 
