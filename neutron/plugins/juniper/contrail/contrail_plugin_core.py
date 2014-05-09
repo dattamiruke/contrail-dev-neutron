@@ -274,6 +274,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         cdict['is_admin'] = getattr(context, 'is_admin', False)
         cdict['operation'] = operation
         cdict['type'] = apitype
+        cdict['tenant_id'] = getattr(context, 'tenant_id', None)
         return cdict
 
     def _encode_resource(self, resource_id=None, resource=None, fields=None,
@@ -325,7 +326,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
     def _delete_resource(self, res_type, context, id):
         res_dict = self._encode_resource(resource_id=id)
-        self._request_backend(context, res_dict, res_type, 'DELETE')
+        return self._request_backend(context, res_dict, res_type, 'DELETE')
 
     def _list_resource(self, res_type, context, filters, fields):
         res_dict = self._encode_resource(filters=filters, fields=fields)
@@ -605,6 +606,13 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         if entry['type'] == 'IpAddressGenerationFailure':
             raise exc.IpAddressGenerationFailure(net_id=entry['network_id'])
 
+    def _extend_port_dict_security_group(self, port_res, port_db):
+        # Security group bindings will be retrieved from the sqlalchemy
+        # model. As they're loaded eagerly with ports because of the
+        # joined load they will not cause an extra query.
+        port_res[securitygroup.SECURITYGROUPS] = port_db.get('security_groups', []) or []
+        return port_res
+
     def _get_port(self, context, id):
         port_dict = self._get_resource('port', context, id, None)
         return port_dict
@@ -711,7 +719,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         if port['port']['fixed_ips'] == attr.ATTR_NOT_SPECIFIED:
             plugin_port['port']['fixed_ips'] = None
         if port['port']['security_groups'] == attr.ATTR_NOT_SPECIFIED:
-            plugin_port['port']['security_groups'] = None
+            del plugin_port['port']['security_groups']
 
         if plugin_port['port']['fixed_ips']:
             self._test_fixed_ips_for_port(context,
@@ -1180,6 +1188,13 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
     # Security Group handlers
     def _make_security_group_rule_dict(self, status_code, security_group_rule, fields=None):
+        if status_code != 200:
+            if security_group_rule['type'] == 'BadRequest':
+                raise exc.BadRequest(resource='security-group-rule', msg=security_group_rule['msg'])
+            if security_group_rule['type'] == 'Conflict':
+                raise exc.Conflict(resource='security-group-rule', msg=security_group_rule['msg'])
+            if security_group_rule['type'] == 'NotFound':
+                raise exc.NotFound(resource='security-group-rule', msg=security_group_rule['msg'])
         res = {'id': security_group_rule['id'],
                'tenant_id': security_group_rule['tenant_id'],
                'security_group_id': security_group_rule['security_group_id'],
@@ -1197,9 +1212,9 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         res = {'id': security_group['id'],
                'name': security_group['name'],
                'tenant_id': security_group['tenant_id'],
-               'description': security_group['description']}
-        res['security_group_rules'] = [self._make_security_group_rule_dict(r)
-                                       for r in security_group['rules']]
+               'description': security_group.get('description')}
+        res['security_group_rules'] = [self._make_security_group_rule_dict(status_code, r)
+                                       for r in security_group.get('rules', [])]
         return self._fields(res, fields)
 
     def create_security_group(self, context, security_group):
@@ -1237,8 +1252,12 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         Deletes a security group
         """
-        self._delete_resource('security_group', context, sg_id)
-
+        status, value = self._delete_resource('security_group', context, sg_id)
+        if status != 200:
+            if value['type'] == 'SecurityGroupCannotRemoveDefault':
+                raise securitygroup.SecurityGroupCannotRemoveDefault()
+            if value['type'] == 'SecurityGroupInUse':
+                raise securitygroup.SecurityGroupInUse(id=sg_id)
         LOG.debug("delete_security_group(): %s" % (sg_id))
 
     def get_security_groups(self, context, filters=None, fields=None,

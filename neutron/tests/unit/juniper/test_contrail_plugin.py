@@ -28,6 +28,7 @@ import webob.exc
 import neutron.db.api
 from neutron.manager import NeutronManager
 from neutron.tests.unit import test_db_plugin as test_plugin
+from neutron.tests.unit import test_extension_security_group as test_sg
 from neutron.tests.unit import testlib_api
 
 
@@ -642,7 +643,6 @@ def fake_get_network_count():
 def fake_handle_network_requests(context, data):
     operation = context['operation']
 
-    #import pdb; pdb.set_trace()
     if operation == 'READ':
        return fake_get_network(net_id=data['net_id'])
     elif operation == 'CREATE':
@@ -662,6 +662,7 @@ class FakeResources(object):
         self._type = res_type
         self._store[res_type] = {}
         self._addr_mgmt = addr_mgmt
+        self._tenants = []
 
     def _filters_is_present(self, filters, key_name, match_value):
         if filters:
@@ -677,6 +678,12 @@ class FakeResources(object):
 
         return True
 
+    def _check_tenant(self, tenant_id):
+        if tenant_id in self._tenants:
+            return
+        self._tenants.append(tenant_id)
+        fake_resources['security_group']._create_default_security_group(tenant_id)
+
     def reset(self):
         self._store[self._type] = {}
         self._addr_mgmt = None
@@ -691,9 +698,9 @@ class FakeResources(object):
         elif operation == 'UPDATE':
            return self.update(data['id'], data['resource'])
         elif operation == 'DELETE':
-           return self.delete(data['id'])
+           return self.delete(data['id'], context=context)
         elif operation == 'READALL':
-           return self.list(data['filters'])
+           return self.list(data['filters'], context=context)
         elif operation == 'READCOUNT':
            return self.count(data['filters'])
 
@@ -714,26 +721,32 @@ class FakeResources(object):
         ret_data = self._store[self._type][id]
         return MockRequestsResponse(200, json.dumps(ret_data))
 
-    def delete(self, id):
+    def delete(self, id, context=None):
         del self._store[self._type][id]
         return MockRequestsResponse(200, json.dumps(''))
 
-    def list(self, filters):
+    def _filter_check(self, filters, resource):
+        for filter in filters or []:
+            if not self._filters_is_present(filters, filter,
+                                        resource.get(filter)):
+                return False
+        return True
+
+    def list(self, filters, context=None):
         resources = self._store[self._type]
         ret_resources = []
         for res_id in resources:
             resource = resources[res_id]
-            if not self._filters_is_present(filters, 'admin_state_up',
-                                            resource.get('admin_state_up')):
+            if not self._filter_check(filters, resource):
                 continue
-            if not self._filters_is_present(filters, 'shared',
-                                            resource.get('shared')):
-                continue
-            if not self._filters_is_present(filters, 'ip_version',
-                                            resource.get('ip_version')):
-                continue
+
+            if self._type == 'security_group':
+                resource['rules'] = []
+                for rule in self._store['security_group_rule'].values():
+                    if rule['security_group_id'] == resource['id']:
+                        resource['rules'].append(rule)
             ret_resources.append(copy.deepcopy(resource))
-                                                  
+
         return MockRequestsResponse(200, json.dumps(ret_resources))
 
     def count(self, filters):
@@ -761,6 +774,7 @@ class FakeNetworks(FakeResources):
 
     def create(self, req_network_data):
         network_data = copy.deepcopy(req_network_data)
+        self._check_tenant(network_data['tenant_id'])
         network_data['subnets'] = []
         response = super(FakeNetworks, self).create(network_data)
         
@@ -786,7 +800,7 @@ class FakeNetworks(FakeResources):
 
         return response
 
-    def delete(self, id):
+    def delete(self, id, context=None):
         non_network_owned_ports = self._ports_on_network(id, False)
         if non_network_owned_ports:
             exc_info = {'type': 'NetworkInUse',
@@ -797,9 +811,9 @@ class FakeNetworks(FakeResources):
         for port in network_owned_ports:
             del self._store['port'][port['id']]
 
-        return super(FakeNetworks, self).delete(id)
+        return super(FakeNetworks, self).delete(id, context)
 
-    def list(self, filters):
+    def list(self, filters, context=None):
         return super(FakeNetworks, self).list(filters)
 
 class FakeSubnets(FakeResources):
@@ -975,7 +989,7 @@ class FakeSubnets(FakeResources):
 
         return response
 
-    def delete(self, id):
+    def delete(self, id, context):
         non_network_owned_ports = self._ports_on_subnet(id, False)
         if self._ports_on_subnet(id):
             exc_info = {'type': 'SubnetInUse',
@@ -991,7 +1005,7 @@ class FakeSubnets(FakeResources):
                           if sn['id'] != id]
         self._store['network'][network_id]['subnets'] = rem_subnets
         self._addr_mgmt.delete_subnet(id)
-        response = super(FakeSubnets, self).delete(id)
+        response = super(FakeSubnets, self).delete(id, context)
         
         return response
 
@@ -1002,7 +1016,7 @@ class FakePorts(FakeResources):
  
     def _ip_to_subnet_id(self, network_id, fixed_ip_dict):
         if fixed_ip_dict.get('subnet_id'):
-            return (fixed_ip_dict['subnet_id'], fixed_ip_dict['ip_address'])
+            return (fixed_ip_dict['subnet_id'], fixed_ip_dict.get('ip_address'))
 
         for subnet in self._store['network'][network_id]['subnets']:
             if fixed_ip_dict['ip_address'] in netaddr.IPNetwork(subnet['cidr']):
@@ -1012,21 +1026,27 @@ class FakePorts(FakeResources):
 
     def create(self, req_port_data):
         port_data = copy.deepcopy(req_port_data)
+        self._check_tenant(port_data['tenant_id'])
         if not port_data.get('id'):
             port_data['id'] = str(uuid.uuid4())
 
         req_fixed_ips = port_data['fixed_ips']
         if req_fixed_ips:
+            network_id = port_data['network_id']
             for fixed_ip_dict in req_fixed_ips:
+                fixed_ip_dict['subnet_id'] = self._ip_to_subnet_id(network_id, fixed_ip_dict)[0]
                 if not self._addr_mgmt.is_ip_unique(fixed_ip_dict['subnet_id'],
-                                                    fixed_ip_dict['ip_address']):
+                                                    fixed_ip_dict.get('ip_address')):
                     exc_info = {'type': 'IpAddressInUse',
                                 'network_id': port_data['network_id'],
                                 'ip_address': fixed_ip_dict['ip_address']}
                     return MockRequestsResponse(409, json.dumps(exc_info))
             for fixed_ip_dict in req_fixed_ips:
                 subnet_id = fixed_ip_dict['subnet_id']
-                address = fixed_ip_dict['ip_address']
+                address = fixed_ip_dict.get('ip_address')
+                if not address:
+                    subnet_id, address = self._addr_mgmt.alloc_ip_subnet(subnet_id, port_data['id'])
+                    fixed_ip_dict['ip_address'] = address
                 self._addr_mgmt.create_ip(subnet_id, address, port_data['id'])
         else:
             port_data['fixed_ips'] = []
@@ -1034,15 +1054,28 @@ class FakePorts(FakeResources):
             subnets = self._store['network'][network_id]['subnets']
             if subnets:
                 subnet_id, address = self._addr_mgmt.alloc_ip(network_id, 
-                                                         port_data['id'])
+                                                         port_data['id'], 4)
                 if address:
                     self._addr_mgmt.create_ip(subnet_id, address, port_data['id'])
-                    port_data['fixed_ips'] = [ {'subnet_id': subnet_id,
-                                                'ip_address': address} ]
+                    port_data['fixed_ips'].append({'subnet_id': subnet_id,
+                                                'ip_address': address})
                 else:
                     exc_info = {'type': 'IpAddressGenerationFailure',
                                 'network_id': network_id}
                     return MockRequestsResponse(409, json.dumps(exc_info))
+
+                subnet_id, address = self._addr_mgmt.alloc_ip(network_id,
+                                                         port_data['id'], 6)
+                if address:
+                    self._addr_mgmt.create_ip(subnet_id, address, port_data['id'])
+                    port_data['fixed_ips'].append({'subnet_id': subnet_id,
+                                                'ip_address': address})
+
+        if 'security_groups' not in port_data:
+            for sg in self._store['security_group'].values():
+                if sg['tenant_id'] == port_data['tenant_id'] and sg['name'] == 'default':
+                    port_data['security_groups'] = [sg['id']]
+                    break
 
         response = super(FakePorts, self).create(port_data)
         return response
@@ -1054,31 +1087,48 @@ class FakePorts(FakeResources):
         req_fixed_ips = port_data.get('fixed_ips')
         if req_fixed_ips:
             network_id = existing_port['network_id']
-            existing_ip_set = set([(e['subnet_id'], e['ip_address']) for e in existing_port['fixed_ips']])
-            new_ip_set = set([self._ip_to_subnet_id(network_id, n) for n in req_fixed_ips])
-            for ip_tuple in existing_ip_set - new_ip_set:
-                self._addr_mgmt.delete_ip(ip_tuple[0], ip_tuple[1], existing_port['id'])
-            for ip_tuple in new_ip_set - existing_ip_set:
-                self._addr_mgmt.create_ip(ip_tuple[0], ip_tuple[1], existing_port['id'])
+            existing_fixed_ips = existing_port['fixed_ips']
+            existing_port['fixed_ips'] = []
+            for req_fixed_ip in req_fixed_ips:
+                subnet_id, ip = self._ip_to_subnet_id(network_id, req_fixed_ip)
+                for port_ip in existing_fixed_ips:
+                    if subnet_id == port_ip['subnet_id'] and ip in [None, port_ip['ip_address']]:
+                        existing_port['fixed_ips'].append(port_ip)
+                        existing_fixed_ips.remove(port_ip)
+                        break
+                else:
+                    if ip:
+                        self._addr_mgmt.create_ip(subnet_id, ip, existing_port['id'])
+                        existing_port['fixed_ips'].append({'subnet_id':subnet_id, 'ip_address':ip})
+                    else:
+                        subnet_id, address = self._addr_mgmt.alloc_ip_subnet(subnet_id,
+                                                                             existing_port['id'])
+                        if address:
+                            self._addr_mgmt.create_ip(subnet_id, address, existing_port['id'])
+                            existing_port['fixed_ips'].append({'subnet_id': subnet_id,
+                                                               'ip_address': address})
+                        else:
+                            exc_info = {'type': 'IpAddressGenerationFailure',
+                                        'network_id': network_id}
+                            return MockRequestsResponse(409, json.dumps(exc_info))
 
-            port_ip_data = []
-            for ip_tuple in new_ip_set:
-                port_ip_data.append({'subnet_id':ip_tuple[0], 'ip_address':ip_tuple[1]})
-            port_data['fixed_ips'] = port_ip_data
+            for fixed_ip in existing_fixed_ips:
+                self._addr_mgmt.delete_ip(fixed_ip['subnet_id'], fixed_ip['ip_address'], existing_port['id'])
+            port_data['fixed_ips'] = existing_port['fixed_ips']
 
         response = super(FakePorts, self).update(id, port_data)
         return response
 
-    def delete(self, id):
+    def delete(self, id, context):
         existing_port = self._store['port'][id]
-        response = super(FakePorts, self).delete(id)
+        response = super(FakePorts, self).delete(id, context)
 
         for fixed_ips in existing_port['fixed_ips']:
             self._addr_mgmt.delete_ip(fixed_ips['subnet_id'], fixed_ips['ip_address'], id)
 
         return response
 
-    def list(self, filters):
+    def list(self, filters, context=None):
         if 'fixed_ips' in filters:
             ret_ports = []
             ports = [self._store['port'][id] for id in self._store['port']]
@@ -1090,6 +1140,156 @@ class FakePorts(FakeResources):
             return MockRequestsResponse(200, json.dumps(ret_ports))
 
         return super(FakePorts, self).list(filters)
+
+class FakeSecurityGroups(FakeResources):
+    def __init__(self):
+        super(FakeSecurityGroups, self).__init__('security_group')
+
+    def _update_rules(self,resource):
+        sg_id = resource['id']
+        resource['rules'] = []
+        for rule in self._store['security_group_rule'].values():
+            if rule['security_group_id'] == resource['id']:
+                resource['rules'].append(copy.deepcopy(rule))
+
+    def create(self, req_sg_data):
+        sg_data = copy.deepcopy(req_sg_data)
+        sg_id = sg_data.get('id', str(uuid.uuid4()))
+        sg_data['id'] = sg_id
+        tenant_id = sg_data['tenant_id']
+        response = super(FakeSecurityGroups, self).create(sg_data)
+        rule1 = {'remote_group_id': None, 'direction': 'egress',
+                 'protocol': None, 'ethertype': 'IPv4',
+                 'port_range_max': None, 'security_group_id': sg_id,
+                 'tenant_id': tenant_id, 'port_range_min': None,
+                 'remote_ip_prefix': None}
+        rule2 = {'remote_group_id': None, 'direction': 'egress',
+                 'protocol': None, 'ethertype': 'IPv6',
+                 'port_range_max': None, 'security_group_id': sg_id,
+                 'tenant_id': tenant_id, 'port_range_min': None,
+                 'remote_ip_prefix': None}
+        fake_resources['security_group_rule'].create(rule1)
+        fake_resources['security_group_rule'].create(rule2)
+        self._update_rules(sg_data)
+        return MockRequestsResponse(200, json.dumps(sg_data))
+
+    def read(self, id):
+        res_data = self._store[self._type][id]
+        resource = copy.deepcopy(res_data)
+        self._update_rules(resource)
+        return MockRequestsResponse(200, json.dumps(resource))
+
+    def _find_security_group(self, tenant_id, sg_name):
+        for sg in self._store['security_group'].values():
+            if sg['tenant_id'] == tenant_id and sg['name'] == sg_name:
+                return sg
+        return None
+
+    def _create_default_security_group(self, tenant_id):
+        if not self._find_security_group(tenant_id, "default"):
+            sg_id = str(uuid.uuid4())
+            self.create({'id': sg_id, 'tenant_id': tenant_id, 'name': 'default'})
+            rule1 = {'remote_group_id': sg_id, 'direction': 'ingress',
+                     'protocol': None, 'ethertype': 'IPv4',
+                     'port_range_max': None, 'security_group_id': sg_id,
+                     'tenant_id': tenant_id, 'port_range_min': None,
+                     'remote_ip_prefix': None}
+            rule2 = {'remote_group_id': sg_id, 'direction': 'ingress',
+                     'protocol': None, 'ethertype': 'IPv6',
+                     'port_range_max': None, 'security_group_id': sg_id,
+                     'tenant_id': tenant_id, 'port_range_min': None,
+                     'remote_ip_prefix': None}
+
+            fake_resources['security_group_rule'].create(rule1)
+            fake_resources['security_group_rule'].create(rule2)
+  
+    def list(self, filters, context=None):
+        tenant_id = filters.get('tenant_id') or context.get('tenant_id')
+        if tenant_id:
+            self._create_default_security_group(tenant_id)
+        return super(FakeSecurityGroups, self).list(filters)
+
+    def delete(self, id, context):
+        sg = self._store['security_group'][id]
+        if sg['name'] == 'default' and 'admin' not in context.get('roles', []):
+            exc_info = {'type': 'SecurityGroupCannotRemoveDefault'}
+            return MockRequestsResponse(409, json.dumps(exc_info))
+
+        for port in self._store['port'].values():
+            if id in port.get('security_groups', []):
+                exc_info = {'type': 'SecurityGroupInUse'}
+                return MockRequestsResponse(409, json.dumps(exc_info))
+
+        return super(FakeSecurityGroups, self).delete(id, context)
+
+class FakeSecurityGroupRules(FakeResources):
+    def __init__(self):
+        super(FakeSecurityGroupRules, self).__init__('security_group_rule')
+
+    def create(self, req_data):
+        data = copy.deepcopy(req_data)
+        tenant_id = data['tenant_id']
+        sg_id = data['security_group_id']
+
+        if data.get('remote_group_id') and data.get('remote_ip_prefix'):
+            exc_info = {'type': 'BadRequest',
+                        'msg': "Cannot specify both remote security group and remote prefix"}
+            return MockRequestsResponse(409, json.dumps(exc_info))
+        if data.get('port_range_min') and data.get('protocol') is None:
+            exc_info = {'type': 'BadRequest',
+                        'msg': "Protocol must also be specified if port range is specified"}
+            return MockRequestsResponse(409, json.dumps(exc_info))
+        if data.get('protocol') != 'icmp':
+            if ((data.get('port_range_min') and data.get('port_range_max') is None) or
+                (data.get('port_range_max') and data.get('port_range_min') is None)):
+                exc_info = {'type': 'BadRequest',
+                            'msg': "Port range min and max must be specified together"}
+                return MockRequestsResponse(409, json.dumps(exc_info))
+            if (data.get('port_range_min') > data.get('port_range_max')):
+                exc_info = {'type': 'BadRequest',
+                            'msg': "Port range min must not be greater than max"}
+                return MockRequestsResponse(409, json.dumps(exc_info))
+        if data.get('protocol') == 'icmp':
+            if data.get('port_range_max') > 255:
+                exc_info = {'type': 'BadRequest',
+                            'msg': "ICMP code must be less than 256"}
+                return MockRequestsResponse(409, json.dumps(exc_info))
+            if data.get('port_range_min') > 255:
+                exc_info = {'type': 'BadRequest',
+                            'msg': "ICMP type must be less than 256"}
+                return MockRequestsResponse(409, json.dumps(exc_info))
+
+        for rule in self._store['security_group_rule'].values():
+            if (rule.get('security_group_id') == data.get('security_group_id') and
+                rule.get('direction') == data.get('direction') and
+                rule.get('ethertype') == data.get('ethertype') and
+                rule.get('protocol') == data.get('protocol') and
+                rule.get('port_range_min') == data.get('port_range_min') and
+                rule.get('port_range_max') == data.get('port_range_max') and
+                rule.get('remote_group_id') == data.get('remote_group_id') and
+                rule.get('remote_ip_prefix') == data.get('remote_ip_prefix')):
+                exc_info = {'type': 'Conflict',
+                            'msg': "Duplicate rules cannot be specified"}
+                return MockRequestsResponse(409, json.dumps(exc_info))
+
+        sg = self._store['security_group'].get(sg_id)
+        if sg is None:
+            exc_info = {'type': 'NotFound',
+                        'msg': "Security group id not found"}
+            return MockRequestsResponse(409, json.dumps(exc_info))
+        if tenant_id != sg['tenant_id']:
+            exc_info = {'type': 'NotFound',
+                        'msg': "Tenant id not found"}
+            return MockRequestsResponse(409, json.dumps(exc_info))
+        remote_sg_id = data.get('remote_group_id')
+        remote_sg = self._store['security_group'].get(remote_sg_id) if remote_sg_id else None
+
+        if remote_sg and tenant_id != remote_sg['tenant_id']:
+            exc_info = {'type': 'NotFound',
+                        'msg': "Tenant id not found"}
+            return MockRequestsResponse(409, json.dumps(exc_info))
+        response = super(FakeSecurityGroupRules, self).create(data)
+        return response
 
 class FakeAddrMgmt(object):
     def __init__(self):
@@ -1108,7 +1308,8 @@ class FakeAddrMgmt(object):
                             'id': subnet_id,
                             'alloc_pools': alloc_pools,
                             'used_addrs': [],
-                            'ip_to_port': {}})
+                            'ip_to_port': {},
+                            'ip_version': subnet_data.get('ip_version')})
 
     def update_subnet(self, subnet_data):
         pass
@@ -1130,9 +1331,16 @@ class FakeAddrMgmt(object):
 
         return True
 
-    def alloc_ip(self, network_id, port_id):
-        subnet_dicts = [self._subnet_dicts[sn_id] for sn_id in self._subnet_dicts
-                              if self._subnet_dicts[sn_id]['network_id'] == network_id]
+    def alloc_ip_subnet(self, subnet_id, port_id):
+        subnet_dict = self._subnet_dicts[subnet_id]
+        for pool in subnet_dict['alloc_pools']:
+            address = self._get_free_ip(pool, subnet_dict['used_addrs'])
+            if address:
+                return subnet_dict['id'], address
+
+    def alloc_ip(self, network_id, port_id, ip_version):
+        subnet_dicts = [sn for sn in self._subnet_dicts.values()
+                              if sn['network_id'] == network_id and sn['ip_version'] == ip_version]
         for subnet_dict in subnet_dicts:
             for pool in subnet_dict['alloc_pools']:
                 address = self._get_free_ip(pool, subnet_dict['used_addrs'])
@@ -1162,6 +1370,8 @@ def initialize_fakes():
                       'network': FakeNetworks(addr_mgmt),
                       'subnet': FakeSubnets(addr_mgmt),
                       'port': FakePorts(addr_mgmt),
+                      'security_group': FakeSecurityGroups(),
+                      'security_group_rule': FakeSecurityGroupRules(),
                      }
 def reset_fakes():
     global fake_resources
@@ -1251,21 +1461,12 @@ class Context(object):
 class JVContrailPluginTestCase(test_plugin.NeutronDbPluginV2TestCase):
     _plugin_name = ('%s.NeutronPluginContrailCoreV2' % CONTRAIL_PKG_PATH)
 
-    def setUp(self):
+    def setUp(self, plugin=None):
 
         cfg.CONF.keystone_authtoken = keystone_info_class()
-        mock_cfgm_common_mod.exceptions = mock_cfgm_exception_mod
-
-        mock_vnc_api_mod.common = mock_cfgm_common_mod
-        mock_vnc_api_mod.VncApi = mock_vnc_api_cls
-
-        mock_vnc_api_pkg.vnc_api = mock_vnc_api_mod
-
         super(JVContrailPluginTestCase, self).setUp(self._plugin_name)
         cfg.CONF.set_override('quota_driver', 'neutron.quota.ConfDriver',
                               group='QUOTAS')
-        self._tenant_id = GlobalProjectApi(self._tenant_id)._uuid
-        neutron.db.api._ENGINE = mock.MagicMock()
 
     def teardown(self):
         super(JVContrailPluginTestCase, self).setUp(self._plugin_name)
@@ -1307,187 +1508,33 @@ class TestContrailPortsV2(test_plugin.TestPortsV2,
         super(TestContrailPortsV2, self).tearDown()
         reset_fakes()
 
-    def test_update_port_update_ip_address_only(self):
-        pass
-
     def test_mac_exhaustion(self):
         pass
-
     def test_create_port_bad_tenant(self):
-        pass
-
-    def test_recycle_ip_address_on_exhausted_allocation_pool(self):
         pass
     def test_mac_generation_4octet(self):
         pass
-    def test_requested_ips_only(self):
-        pass
-    def test_update_port_add_additional_ip(self):
-        pass
     def test_mac_generation(self):
         pass
-    def test_range_allocation(self):
-        pass
     def test_update_fixed_ip_lease_expiration_invalid_address(self):
-        pass
-    def test_requested_subnet_id_v4_and_v6(self):
         pass
     def test_requested_duplicate_mac(self):
         pass
     def test_recycle_ip_address_in_allocation_pool(self):
         pass
-    def test_requested_subnet_id(self):
-        pass
     def test_recycle_ip_address_outside_allocation_pool(self):
         pass
-#   def test_create_port_json(self):
-#       ##
-#       pass
-#
-#   def test_create_port_bad_tenant(self):
-#       ## - 403 vs 404
-#       pass
-#
-#   def test_create_port_public_network(self):
-#       ## - tenant id is a name
-#       pass
-#
-#   def test_create_port_public_network_with_ip(self):
-#       ##
-#       pass
-#
-#   def test_create_ports_bulk_emulated(self):
-#       ##
-#       pass
-#
-#   def test_create_ports_bulk_wrong_input(self):
-#       ##
-#       pass
-#
-#   def test_create_port_as_admin(self):
-#       ##
-#       pass
-#
-#   def test_list_ports(self):
-#       ##
-#       pass
-#
-#   def test_list_ports_filtered_by_fixed_ip(self):
-#       ##
-#       pass
-#
-#   def test_list_ports_public_network(self):
-#       ##
-#       pass
-#
-#   def test_list_ports_with_pagination_emulated(self):
-#       ##
-#       pass
-#
-#   def test_list_ports_with_pagination_reverse_emulated(self):
-#       ##
-#       pass
-#
-#   def test_list_ports_with_sort_emulated(self):
-#       ##
-#       pass
-#
-#   def test_delete_port(self):
-#       ## - tenant id is a name ???
-#       pass
-#
-#   def test_delete_port_public_network(self):
-#       ## - tenant id is a name ???
-#       pass
-#
-#   def test_update_port_update_ip(self):
-#       ##
-#       pass
-#
-#   def test_update_port_delete_ip(self):
-#       ##
-#       pass
-#
-#   def test_update_port_update_ip_address_only(self):
-#       ##
-#       pass
-#
-#   def test_update_port_update_ips(self):
-#       ##
-#       pass
-#
-#   def test_update_port_add_additional_ip(self):
-#       ##
-#       pass
-#
-#   def test_update_port_not_admin(self):
-#       ##
-#       pass
-#
-#   def test_delete_network_if_port_exists(self):
-#       ##
-#       pass
-#
-#   def test_no_more_port_exception(self):
-#       ##
-#       pass
-#
-#   def test_requested_duplicate_mac(self):
-#       ##
-#       pass
-#
-#   def test_mac_generation(self):
-#       ##
-#       pass
-#
-#   def test_mac_generation_4octet(self):
-#       ##
-#       pass
-#
-#   def test_mac_exhaustion(self):
-#       ##
-#       pass
-#
-#   def test_requested_duplicate_ip(self):
-#       ##
-#       pass
-#
-#   def test_requested_subnet_delete(self):
-#       ##
-#       pass
-#
-#   def test_requested_subnet_id(self):
-#       ##
-#       pass
-#
-#   def test_requested_subnet_id_not_on_network(self):
-#       ##
-#       pass
-#
-#   def test_requested_subnet_id_v4_and_v6(self):
-#       ##
-#       pass
-#
-#   def test_range_allocation(self):
-#       self.skipTest("Plugin does not support Neutron allocation process")
-#
-#   def test_requested_invalid_fixed_ips(self):
-#       ##
-#       pass
-#
-#   def test_requested_split(self):
-#       ## - valid IP Address ???
-#       pass
-#
-#   def test_requested_ips_only(self):
-#       ##
-#       pass
-#
-#   def test_max_fixed_ips_exceeded(self):
-#       ##
-#       pass
-#
-#   def test_update_max_fixed_ips_exceeded(self):
-#       ##
-#       pass
+    def test_recycle_ip_address_on_exhausted_allocation_pool(self):
+        pass
 
+
+class TestContrailSecurityGroups(test_sg.TestSecurityGroups,
+                                 JVContrailPluginTestCase):
+    def setUp(self, plugin=None):
+        initialize_fakes()
+        super(TestContrailSecurityGroups, self).setUp(self._plugin_name)
+
+    def tearDown(self):
+        super(TestContrailSecurityGroups, self).tearDown()
+        reset_fakes()
+    #def test_delete_default_security_group_nonadmin(self): pass
