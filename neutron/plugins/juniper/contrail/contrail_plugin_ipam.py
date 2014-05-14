@@ -16,116 +16,80 @@
 #
 # @author: Hampapur Ajay, Praneet Bachheti
 
+import copy
 import logging
 from pprint import pformat
 import sys
 
 import cgitb
 
-from contrail_plugin_core import NeutronPluginContrailCoreV2
-
 LOG = logging.getLogger(__name__)
 
 
 class NeutronPluginContrailIpam(object):
+    def set_core(self, core_instance):
+        self._core = core_instance
+
+    def _make_ipam_dict(self, entry, status_code=None, fields=None):
+        return entry
 
     def create_ipam(self, context, ipam):
         """
-        Creates a new IPAM, and assigns it
-        a symbolic name.
+        Creates a new ipam, and assigns it a symbolic name.
         """
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            ipam_info = cfgdb.ipam_create(ipam['ipam'])
+        plugin_ipam = copy.deepcopy(ipam)
 
-            # TODO add this in extension
-            ##verify transformation is conforming to api
-            #ipam_dict = self._make_ipam_dict(ipam_info)
-            ipam_dict = ipam_info['q_api_data']
-            ipam_dict.update(ipam_info['q_extra_data'])
+        ipam_dicts = self._core._create_resource('ipam', context, plugin_ipam)
+        LOG.debug("create_ipam(): " + pformat(ipam_dicts) + "\n")
 
-            LOG.debug("create_ipam(): " + pformat(ipam_dict))
-            return ipam_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        return ipam_dicts
 
-    def get_ipam(self, context, id, fields=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            ipam_info = cfgdb.ipam_read(id)
-
-            # TODO add this in extension
-            ## verify transformation is conforming to api
-            #ipam_dict = self._make_ipam_dict(ipam_info)
-            ipam_dict = ipam_info['q_api_data']
-            ipam_dict.update(ipam_info['q_extra_data'])
-
-            LOG.debug("get_ipam(): " + pformat(ipam_dict))
-            return ipam_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    def update_ipam(self, context, id, ipam):
+    def get_ipam(self, context, ipam_id, fields=None):
         """
-        Updates the attributes of a particular IPAM.
+        Get the attributes of a ipam.
         """
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            ipam_info = cfgdb.ipam_update(id, ipam)
+        ipam_dicts = self._core._get_resource('ipam', context, ipam_id, fields)
 
-            # TODO add this in extension
-            ## verify transformation is conforming to api
-            #ipam_dict = self._make_ipam_dict(ipam_info)
-            ipam_dict = ipam_info['q_api_data']
-            ipam_dict.update(ipam_info['q_extra_data'])
+        LOG.debug("get_ipam(): " + pformat(ipam_dicts))
+        return ipam_dicts
 
-            LOG.debug("update_ipam(): " + pformat(ipam_dict))
-            return ipam_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+    def update_ipam(self, context, ipam_id, ipam):
+        """
+        Updates the attributes of a particular ipam.
+        """
+        plugin_ipam = copy.deepcopy(ipam)
+        ipam_dicts = self._core._update_resource('ipam', context, ipam_id,
+                                           plugin_ipam)
+
+        LOG.debug("update_ipam(): " + pformat(ipam_dicts))
+        return ipam_dicts
 
     def delete_ipam(self, context, ipam_id):
         """
-        Deletes the ipam with the specified identifier
+        Deletes the ipam with the specified identifier.
         """
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            cfgdb.ipam_delete(ipam_id)
+        self._core._delete_resource('ipam', context, ipam_id)
 
-            LOG.debug("delete_ipam(): " + pformat(ipam_id))
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        LOG.debug("delete_ipam(): %s" % (ipam_id))
 
     def get_ipams(self, context, filters=None, fields=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            ipams_info = cfgdb.ipam_list(filters)
+        """
+        Retrieves all ipams identifiers.
+        """
+        ipam_dicts = self._core._list_resource('ipam', context, filters, fields)
 
-            ipams_dicts = []
-            for ipam_info in ipams_info:
-                # TODO add this in extension
-                # verify transformation is conforming to api
-                #ipam_dict = self._make_ipam_dict(ipam_info)
-                ipam_dict = ipam_info['q_api_data']
-                ipam_dict.update(ipam_info['q_extra_data'])
-                ipams_dicts.append(ipam_dict)
-
-            LOG.debug("get_ipams(): " + pformat(ipams_dicts))
-            return ipams_dicts
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        LOG.debug(
+            "get_ipams(): filters: " + pformat(filters) + " data: "
+            + pformat(ipam_dicts))
+        return ipam_dicts
 
     def get_ipams_count(self, context, filters=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            ipams_count = cfgdb.ipams_count(filters)
-            LOG.debug("get_ipams_count(): " + str(ipams_count))
-            return ipams_count
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        """
+        Get the count of ipams.
+        """
+        ipams_count = self._core._count_resource('ipam', context, filters)
+
+        LOG.debug("get_ipams_count(): filters: " + pformat(filters) +
+                  " data: " + str(ipams_count['count']))
+        return ipams_count['count']
+
