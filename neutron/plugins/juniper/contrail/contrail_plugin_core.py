@@ -78,77 +78,75 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
     _tenant_name_dict = {}
     PLUGIN_URL_PREFIX = '/neutron'
 
-    @classmethod
-    def _parse_class_args(cls):
-        cls._multi_tenancy = cfg.CONF.APISERVER.multi_tenancy
+    def _parse_class_args(self):
+        self._multi_tenancy = cfg.CONF.APISERVER.multi_tenancy
 
         # contrail extension format:
         #  contrail_extensions=ipam:<classpath>,policy:<classpath>
         ext_aliases = NeutronPluginContrailCoreV2.supported_extension_aliases
-        cls._contrail_extensions_class = []
+        self._contrail_extensions_class = []
         contrail_exts_conf = cfg.CONF.APISERVER.contrail_extensions
         if contrail_exts_conf:
             supp_exts = contrail_exts_conf.split(",")
             for supp_ext in supp_exts:
                 ext_vars = supp_ext.split(":")
                 ext_aliases.append(ext_vars[0])
-                cls._contrail_extensions_class.append(
-                    importutils.import_class(ext_vars[1])())
+                ext_class=importutils.import_class(ext_vars[1])
+                ext_instance = ext_class()
+                ext_instance.set_core(self)
+                self._contrail_extensions_class.append(ext_instance)
 
-        cls._max_retries = cfg.CONF.APISERVER.max_retries
-        cls._retry_interval = cfg.CONF.APISERVER.retry_interval
+        self._max_retries = cfg.CONF.APISERVER.max_retries
+        self._retry_interval = cfg.CONF.APISERVER.retry_interval
 
         keystone_conf = cfg.CONF.keystone_authtoken
-        cls._admin_token = keystone_conf.admin_token
-        cls._auth_url = ('%s://%s:%s/v2.0/' %
+        self._admin_token = keystone_conf.admin_token
+        self._auth_url = ('%s://%s:%s/v2.0/' %
                          (keystone_conf.auth_protocol,
                           keystone_conf.auth_host,
                           keystone_conf.auth_port))
-        cls._admin_user = keystone_conf.admin_user
-        cls._admin_password = keystone_conf.admin_password
-        cls._admin_tenant_name = keystone_conf.admin_tenant_name
-        cls._tenants_api = '%s/tenants' % (cls._auth_url)
+        self._admin_user = keystone_conf.admin_user
+        self._admin_password = keystone_conf.admin_password
+        self._admin_tenant_name = keystone_conf.admin_tenant_name
+        self._tenants_api = '%s/tenants' % (self._auth_url)
 
-    @classmethod
-    def _connect_to_db(cls):
+    def _connect_to_db(self):
         """
         Many instantiations of plugin (base + extensions) but need to have
         only one config db conn (else error from ifmap-server)
         """
-        cls._cfgdb_map = {}
-        if cls._cfgdb is None:
+        self._cfgdb_map = {}
+        if self._cfgdb is None:
             # Initialize connection to DB and add default entries
-            cls._cfgdb = ctdb.config_db.DBInterface(
-                cls._admin_user,
-                cls._admin_password,
-                cls._admin_tenant_name,
+            self._cfgdb = ctdb.config_db.DBInterface(
+                self._admin_user,
+                self._admin_password,
+                self._admin_tenant_name,
                 cfg.CONF.APISERVER.api_server_ip,
                 cfg.CONF.APISERVER.api_server_port)
-            cls._cfgdb.manager = cls
+            self._cfgdb.manager = self
 
-    @classmethod
-    def _get_user_cfgdb(cls, context):
-        if not cls._multi_tenancy:
-            return cls._cfgdb
+    def _get_user_cfgdb(self, context):
+        if not self._multi_tenancy:
+            return self._cfgdb
         user_id = context.user_id
         role = string.join(context.roles, ",")
-        if not user_id in cls._cfgdb_map:
-            cls._cfgdb_map[user_id] = ctdb.config_db.DBInterface(
-                cls._admin_user, cls._admin_password, cls._admin_tenant_name,
+        if not user_id in self._cfgdb_map:
+            self._cfgdb_map[user_id] = ctdb.config_db.DBInterface(
+                self._admin_user, self._admin_password, self._admin_tenant_name,
                 cfg.CONF.APISERVER.api_server_ip,
                 cfg.CONF.APISERVER.api_server_port,
                 user_info={'user_id': user_id, 'role': role})
-            cls._cfgdb_map[user_id].manager = cls
+            self._cfgdb_map[user_id].manager = self
 
-        return cls._cfgdb_map[user_id]
+        return self._cfgdb_map[user_id]
 
-    @classmethod
-    def _tenant_list_from_keystone(cls):
+    def _tenant_list_from_keystone(self):
         # get all tenants
-        headers = {'X-Auth-Token': cls._admin_token,
+        headers = {'X-Auth-Token': self._admin_token,
                    'Content-Type': 'application/json'}
         try:
-            response, content = Http().request(cls._tenants_api,
+            response, content = Http().request(self._tenants_api,
                                                method="GET",
                                                headers=headers)
             if response.status != 200:
@@ -167,25 +165,24 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         for tenant in content['tenants']:
             print 'Adding tenant %s:%s to cache' % (tenant['name'],
                                                     tenant['id'])
-            cls._tenant_id_dict[tenant['id']] = tenant['name']
-            cls._tenant_name_dict[tenant['name']] = tenant['id']
+            self._tenant_id_dict[tenant['id']] = tenant['name']
+            self._tenant_name_dict[tenant['name']] = tenant['id']
 
     def __init__(self):
         cfg.CONF.register_opts(vnc_opts, 'APISERVER')
 
-        NeutronPluginContrailCoreV2._parse_class_args()
+        self._parse_class_args()
 
-        NeutronPluginContrailCoreV2._connect_to_db()
+        self._connect_to_db()
         self._cfgdb = NeutronPluginContrailCoreV2._cfgdb
 
-        NeutronPluginContrailCoreV2._tenant_list_from_keystone()
+        self._tenant_list_from_keystone()
 
         self.base_binding_dict = self._get_base_binding_dict()
         portbindings_base.register_port_dict_function()
 
-    @classmethod
-    def __getattr__(cls, name):
-        for extension_class in cls._contrail_extensions_class:
+    def __getattr__(self, name):
+        for extension_class in self._contrail_extensions_class:
             try:
                 return getattr(extension_class, name)
             except AttributeError:
@@ -201,32 +198,30 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                 'security-group' in self.supported_extension_aliases}}
         return binding
 
-    @classmethod
-    def tenant_id_to_name(cls, id):
+    def tenant_id_to_name(self, id):
         # bail if we never built the list successfully
-        if len(cls._tenant_id_dict) == 0:
+        if len(self._tenant_id_dict) == 0:
             return id
         # check cache
-        if id in cls._tenant_id_dict:
-            return cls._tenant_id_dict[id]
+        if id in self._tenant_id_dict:
+            return self._tenant_id_dict[id]
         # otherwise refresh
-        cls._tenant_list_from_keystone()
+        self._tenant_list_from_keystone()
         # second time's a charm?
-        return cls._tenant_id_dict[id] if id in cls._tenant_id_dict else id
+        return self._tenant_id_dict[id] if id in self._tenant_id_dict else id
 
-    @classmethod
-    def tenant_name_to_id(cls, name):
+    def tenant_name_to_id(self, name):
         # bail if we never built the list successfully
-        if len(cls._tenant_name_dict) == 0:
+        if len(self._tenant_name_dict) == 0:
             return name
         # check cache
-        if name in cls._tenant_name_dict:
-            return cls._tenant_name_dict[name]
+        if name in self._tenant_name_dict:
+            return self._tenant_name_dict[name]
         # otherwise refresh
-        cls._tenant_list_from_keystone()
+        self._tenant_list_from_keystone()
         # second time's a charm?
-        if name in cls._tenant_name_dict:
-            return cls._tenant_name_dict[name]
+        if name in self._tenant_name_dict:
+            return self._tenant_name_dict[name]
         else:
             return name
 
@@ -515,7 +510,6 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         if plugin_subnet['subnet']['allocation_pools']:
             self._validate_allocation_pools(plugin_subnet['subnet']['allocation_pools'],
                                             plugin_subnet['subnet']['cidr'])
-        #import pdb; pdb.set_trace()
         if (plugin_subnet['subnet']['gateway_ip'] and 
             plugin_subnet['subnet']['allocation_pools']):
             self._validate_gw_out_of_pools(plugin_subnet['subnet']['gateway_ip'],

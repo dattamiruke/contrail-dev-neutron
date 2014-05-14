@@ -16,115 +16,79 @@
 #
 # @author: Hampapur Ajay, Praneet Bachheti
 
+import copy
 import logging
 from pprint import pformat
 import sys
 
 import cgitb
 
-from contrail_plugin_core import NeutronPluginContrailCoreV2
-
 LOG = logging.getLogger(__name__)
 
 
 class NeutronPluginContrailPolicy(object):
+    def set_core(self, core_instance):
+        self._core = core_instance
+
+    def _make_policy_dict(self, entry, status_code=None, fields=None):
+        return entry
+
     def create_policy(self, context, policy):
         """
-        Creates a new Policy, and assigns it
-        a symbolic name.
+        Creates a new Policy, and assigns it a symbolic name.
         """
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            policy_info = cfgdb.policy_create(policy['policy'])
+        plugin_policy = copy.deepcopy(policy)
 
-            # TODO add this in extension
-            ##verify transformation is conforming to api
-            #ipam_dict = self._make_ipam_dict(ipam_info)
-            policy_dict = policy_info['q_api_data']
-            policy_dict.update(policy_info['q_extra_data'])
+        policy_dicts = self._core._create_resource('policy', context, plugin_policy)
+        LOG.debug("create_policy(): " + pformat(policy_dicts) + "\n")
 
-            LOG.debug("create_policy(): " + pformat(policy_dict))
-            return policy_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        return policy_dicts
 
-    def get_policy(self, context, id, fields=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            policy_info = cfgdb.policy_read(id)
-
-            # TODO add this in extension
-            ## verify transformation is conforming to api
-            #ipam_dict = self._make_ipam_dict(ipam_info)
-            policy_dict = policy_info['q_api_data']
-            policy_dict.update(policy_info['q_extra_data'])
-
-            LOG.debug("get_policy(): " + pformat(policy_dict))
-            return policy_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
-
-    def update_policy(self, context, id, policy):
+    def get_policy(self, context, policy_id, fields=None):
         """
-        Updates the attributes of a particular Policy.
+        Get the attributes of a policy.
         """
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            policy_info = cfgdb.policy_update(id, policy)
+        policy_dicts = self._core._get_resource('policy', context, policy_id, fields)
 
-            # TODO add this in extension
-            ## verify transformation is conforming to api
-            #ipam_dict = self._make_ipam_dict(ipam_info)
-            policy_dict = policy_info['q_api_data']
-            policy_dict.update(policy_info['q_extra_data'])
+        LOG.debug("get_policy(): " + pformat(policy_dicts))
+        return policy_dicts
 
-            LOG.debug("update_policy(): " + pformat(policy_dict))
-            return policy_dict
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+    def update_policy(self, context, policy_id, policy):
+        """
+        Updates the attributes of a particular policy.
+        """
+        plugin_policy = copy.deepcopy(policy)
+        policy_dicts = self._core._update_resource('policy', context, policy_id,
+                                             plugin_policy)
+
+        LOG.debug("update_policy(): " + pformat(policy_dicts))
+        return policy_dicts
 
     def delete_policy(self, context, policy_id):
         """
         Deletes the Policy with the specified identifier
         """
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            cfgdb.policy_delete(policy_id)
+        self._core._delete_resource('policy', context, policy_id)
 
-            LOG.debug("delete_policy(): " + pformat(policy_id))
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        LOG.debug("delete_policy(): %s" % (policy_id))
 
     def get_policys(self, context, filters=None, fields=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            policys_info = cfgdb.policy_list(filters)
+        """
+        Retrieves all policies identifiers.
+        """
+        policy_dicts = self._core._list_resource('policy', context, filters, fields)
 
-            policys_dicts = []
-            for policy_info in policys_info:
-                # TODO add this in extension
-                # verify transformation is conforming to api
-                #ipam_dict = self._make_ipam_dict(ipam_info)
-                policy_dict = policy_info['q_api_data']
-                policy_dict.update(policy_info['q_extra_data'])
-                policys_dicts.append(policy_dict)
-
-            LOG.debug("get_policys(): " + pformat(policys_dicts))
-            return policys_dicts
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        LOG.debug(
+            "get_policys(): filters: " + pformat(filters) + " data: "
+            + pformat(policy_dicts))
+        return policy_dicts
 
     def get_policy_count(self, context, filters=None):
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            policy_count = cfgdb.policy_count(filters)
-            LOG.debug("get_policy_count(): " + str(policy_count))
-            return policy_count
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        """
+        Get the count of policies.
+        """
+        policies_count = self._core._count_resource('policy', context, filters)
+
+        LOG.debug("get_policy_count(): filters: " + pformat(filters) +
+                  " data: " + str(policies_count['count']))
+        return policies_count['count']
