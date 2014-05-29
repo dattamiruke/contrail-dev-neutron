@@ -53,8 +53,6 @@ vnc_opts = [
 
 class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                                   securitygroup.SecurityGroupPluginBase,
-                                  portbindings_base.PortBindingBaseMixin,
-                                  l3_db.L3_NAT_db_mixin,
                                   external_net.External_net):
 
     # agent extension is added to avoid return 404 for get_agents
@@ -235,12 +233,10 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
         info_dicts = []
         if info:
-            func(info, status_code, fields)
-            info_dicts = info
+            info_dicts = func(info, status_code, fields)
         else:
             for info_entry in info_list:
-                func(info_entry, status_code, fields)
-                info_dict = info_entry
+                info_dict = func(info_entry, status_code, fields)
                 info_dicts.append(info_dict)
 
         return info_dicts
@@ -301,9 +297,33 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             if entry['type'] == 'NetworkInUse':
                 raise exc.NetworkInUse(net_id=entry['id'])
 
+        return self._make_network_dict(entry)
+
     def _get_network(self, context, id):
         network_dict = self._get_resource('network', context, id, None)
         return network_dict
+
+    def _fields(self, resource, fields):
+        if fields:
+            return dict(((key, item) for key, item in resource.items()
+                         if key in fields))
+        return resource
+
+    def _make_network_dict(self, network, fields=None,
+                           process_extensions=True):
+        res = {'id': network['id'],
+               'name': network['name'],
+               'tenant_id': network['tenant_id'],
+               'admin_state_up': network['admin_state_up'],
+               'status': network['status'],
+               'shared': network['shared'],
+               'subnets': [subnet['id']
+                           for subnet in network['subnets']]}
+        # Call auxiliary extend functions, if any
+        if process_extensions:
+            self._apply_dict_extend_functions(
+                attr.NETWORKS, res, network)
+        return self._fields(res, fields)
 
     def create_network(self, context, network):
         """
@@ -391,6 +411,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                     ip_address=gateway_ip)
             if entry['type'] == 'SubnetNotFound':
                 raise exc.SubnetNotFound(subnet_id=entry['id'])
+        return entry
 
     def _get_subnet(self, context, id):
         subnet_dict = self._get_resource('subnet', context, id, None)
@@ -522,6 +543,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             if entry['type'] == 'IpAddressGenerationFailure':
                 raise exc.IpAddressGenerationFailure(
                     net_id=entry['network_id'])
+        return entry
 
     def _extend_port_dict_security_group(self, port_res, port_db):
         # Security group bindings will be retrieved from the sqlalchemy
@@ -712,7 +734,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
     def _validate_router_response(self, router, status_code=None, fields=None,
                           process_extensions=True):
-        pass
+        return entry
 
     # Router API handlers
     def create_router(self, context, router):
@@ -812,7 +834,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
     # Floating IP API handlers
     def _validate_floatingip_response(self, floatingip, status_code=None,
                                       fields=None):
-        pass
+        return entry
 
     def create_floatingip(self, context, floatingip):
         """
@@ -907,10 +929,11 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             if security_group_rule['type'] == 'NotFound':
                 raise exc.NotFound(resource='security-group-rule',
                                    msg=security_group_rule['msg'])
+        return entry
 
     def _validate_security_group_response(self, security_group,
                                           status_code=None, fields=None):
-        pass
+        return entry
 
     def create_security_group(self, context, security_group):
         """
