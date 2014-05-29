@@ -30,8 +30,8 @@ class NeutronPluginContrailIpam(object):
     def set_core(self, core_instance):
         self._core = core_instance
 
-    def _make_ipam_dict(self, entry, status_code=None, fields=None):
-        return entry
+    def _validate_ipam_response(self, entry, status_code=None, fields=None):
+        pass
 
     def create_ipam(self, context, ipam):
         """
@@ -76,7 +76,8 @@ class NeutronPluginContrailIpam(object):
         """
         Retrieves all ipams identifiers.
         """
-        ipam_dicts = self._core._list_resource('ipam', context, filters, fields)
+        ipam_dicts = self._core._list_resource('ipam', context, filters,
+                                               fields)
 
         LOG.debug(
             "get_ipams(): filters: " + pformat(filters) + " data: "
@@ -92,4 +93,3 @@ class NeutronPluginContrailIpam(object):
         LOG.debug("get_ipams_count(): filters: " + pformat(filters) +
                   " data: " + str(ipams_count['count']))
         return ipams_count['count']
-

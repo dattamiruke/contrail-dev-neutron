@@ -30,8 +30,8 @@ class NeutronPluginContrailPolicy(object):
     def set_core(self, core_instance):
         self._core = core_instance
 
-    def _make_policy_dict(self, entry, status_code=None, fields=None):
-        return entry
+    def _validate_policy_response(self, entry, status_code=None, fields=None):
+        pass
 
     def create_policy(self, context, policy):
         """
@@ -39,7 +39,8 @@ class NeutronPluginContrailPolicy(object):
         """
         plugin_policy = copy.deepcopy(policy)
 
-        policy_dicts = self._core._create_resource('policy', context, plugin_policy)
+        policy_dicts = self._core._create_resource('policy', context,
+                                                   plugin_policy)
         LOG.debug("create_policy(): " + pformat(policy_dicts) + "\n")
 
         return policy_dicts
@@ -48,7 +49,8 @@ class NeutronPluginContrailPolicy(object):
         """
         Get the attributes of a policy.
         """
-        policy_dicts = self._core._get_resource('policy', context, policy_id, fields)
+        policy_dicts = self._core._get_resource('policy', context, policy_id,
+                                                fields)
 
         LOG.debug("get_policy(): " + pformat(policy_dicts))
         return policy_dicts
@@ -58,8 +60,8 @@ class NeutronPluginContrailPolicy(object):
         Updates the attributes of a particular policy.
         """
         plugin_policy = copy.deepcopy(policy)
-        policy_dicts = self._core._update_resource('policy', context, policy_id,
-                                             plugin_policy)
+        policy_dicts = self._core._update_resource('policy', context,
+                                                   policy_id, plugin_policy)
 
         LOG.debug("update_policy(): " + pformat(policy_dicts))
         return policy_dicts
@@ -76,7 +78,8 @@ class NeutronPluginContrailPolicy(object):
         """
         Retrieves all policies identifiers.
         """
-        policy_dicts = self._core._list_resource('policy', context, filters, fields)
+        policy_dicts = self._core._list_resource('policy', context, filters,
+                                                 fields)
 
         LOG.debug(
             "get_policys(): filters: " + pformat(filters) + " data: "
