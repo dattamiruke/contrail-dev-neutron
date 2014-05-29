@@ -29,13 +29,12 @@ class NeutronPluginContrailVpc(object):
         self._core = core_instance
 
     # VPC route table handlers
-    def _make_route_table_routes_dict(self, route_table_route, fields=None):
-        res = {'prefix': route_table_route['prefix'],
-               'next_hop': route_table_route['next_hop']}
+    def _validate_route_table_routes_response(self, route_table_route,
+        fields=None):
+        pass
 
-        return self._core._fields(res, fields)
-
-    def _make_route_table_dict(self, route_table, status_code=None, fields=None):
+    def _make_route_table_dict(self, route_table, status_code=None,
+                               fields=None):
         res = {'id': route_table['id'],
                'name': route_table['name'],
                'fq_name': route_table['fq_name'],
@@ -94,7 +93,7 @@ class NeutronPluginContrailVpc(object):
                          sorts=None, limit=None, marker=None,
                          page_reverse=False):
         """
-        Retrieves all route tables 
+        Retrieves all route tables
         """
         rt_dicts = self._core._list_resource('route_table', context, filters,
                                              fields)
@@ -105,7 +104,8 @@ class NeutronPluginContrailVpc(object):
         return rt_dicts
 
     # VPC route table nat instance handlers
-    def _make_nat_instance_dict(self, nat_instance, status_code=None, fields=None):
+    def _make_nat_instance_dict(self, nat_instance, status_code=None,
+                                fields=None):
         res = {'id': nat_instance['id'],
                'name': nat_instance['name'],
                'tenant_id': nat_instance['tenant_id']}

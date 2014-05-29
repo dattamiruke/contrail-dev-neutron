@@ -17,32 +17,21 @@
 # @author: Hampapur Ajay, Praneet Bachheti, Rudra Rugge, Atul Moghe
 
 import copy
-import logging
-import ConfigParser
-from pprint import pformat
 
 from neutron.api.v2 import attributes as attr
-from neutron.manager import NeutronManager
 from neutron.common import exceptions as exc
 from neutron.db import db_base_plugin_v2
 from neutron.db import portbindings_base
 from neutron.db import l3_db
-from neutron.extensions import l3, securitygroup, vpcroutetable, external_net
-from neutron.extensions import portbindings
+from neutron.extensions import securitygroup, external_net
 from neutron.openstack.common import importutils
 from neutron.openstack.common import jsonutils as json
 from neutron.openstack.common import log as logging
 
-from oslo.config import cfg
 from httplib2 import Http
 import netaddr
-import re
+from oslo.config import cfg
 import requests
-import string
-import sys
-import cgitb
-
-import ctdb.config_db
 
 LOG = logging.getLogger(__name__)
 
@@ -63,16 +52,15 @@ vnc_opts = [
 
 
 class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
-                     securitygroup.SecurityGroupPluginBase,
-                     portbindings_base.PortBindingBaseMixin,
-                     l3_db.L3_NAT_db_mixin,
-                     external_net.External_net):
+                                  securitygroup.SecurityGroupPluginBase,
+                                  portbindings_base.PortBindingBaseMixin,
+                                  l3_db.L3_NAT_db_mixin,
+                                  external_net.External_net):
 
     # agent extension is added to avoid return 404 for get_agents
-    supported_extension_aliases = ["security-group", "router", "route-table",
+    supported_extension_aliases = ["security-group", "router",
                                    "port-security", "binding", "agent",
                                    "quotas", "external-net"]
-    _cfgdb = None
     _args = None
     _tenant_id_dict = {}
     _tenant_name_dict = {}
@@ -91,7 +79,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             for supp_ext in supp_exts:
                 ext_vars = supp_ext.split(":")
                 ext_aliases.append(ext_vars[0])
-                ext_class=importutils.import_class(ext_vars[1])
+                ext_class = importutils.import_class(ext_vars[1])
                 ext_instance = ext_class()
                 ext_instance.set_core(self)
                 self._contrail_extensions_class.append(ext_instance)
@@ -109,37 +97,6 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         self._admin_password = keystone_conf.admin_password
         self._admin_tenant_name = keystone_conf.admin_tenant_name
         self._tenants_api = '%s/tenants' % (self._auth_url)
-
-    def _connect_to_db(self):
-        """
-        Many instantiations of plugin (base + extensions) but need to have
-        only one config db conn (else error from ifmap-server)
-        """
-        self._cfgdb_map = {}
-        if self._cfgdb is None:
-            # Initialize connection to DB and add default entries
-            self._cfgdb = ctdb.config_db.DBInterface(
-                self._admin_user,
-                self._admin_password,
-                self._admin_tenant_name,
-                cfg.CONF.APISERVER.api_server_ip,
-                cfg.CONF.APISERVER.api_server_port)
-            self._cfgdb.manager = self
-
-    def _get_user_cfgdb(self, context):
-        if not self._multi_tenancy:
-            return self._cfgdb
-        user_id = context.user_id
-        role = string.join(context.roles, ",")
-        if not user_id in self._cfgdb_map:
-            self._cfgdb_map[user_id] = ctdb.config_db.DBInterface(
-                self._admin_user, self._admin_password, self._admin_tenant_name,
-                cfg.CONF.APISERVER.api_server_ip,
-                cfg.CONF.APISERVER.api_server_port,
-                user_info={'user_id': user_id, 'role': role})
-            self._cfgdb_map[user_id].manager = self
-
-        return self._cfgdb_map[user_id]
 
     def _tenant_list_from_keystone(self):
         # get all tenants
@@ -173,13 +130,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
         self._parse_class_args()
 
-        self._connect_to_db()
-        self._cfgdb = NeutronPluginContrailCoreV2._cfgdb
-
         self._tenant_list_from_keystone()
-
-        self.base_binding_dict = self._get_base_binding_dict()
-        portbindings_base.register_port_dict_function()
 
     def __getattr__(self, name):
         for extension_class in self._contrail_extensions_class:
@@ -189,14 +140,6 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                 pass
 
         raise AttributeError()
-
-    def _get_base_binding_dict(self):
-        binding = {
-            portbindings.VIF_TYPE: portbindings.VIF_TYPE_VROUTER,
-            portbindings.CAPABILITIES: {
-                portbindings.CAP_PORT_FILTER:
-                'security-group' in self.supported_extension_aliases}}
-        return binding
 
     def tenant_id_to_name(self, id):
         # bail if we never built the list successfully
@@ -228,7 +171,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
     # Return empty list of agents.
     def get_agents(self, context, filters=None, fields=None):
         agents = []
-        return agents;
+        return agents
 
     # Helper routines
     def _request_api_server(self, url, method, data=None, headers=None):
@@ -254,7 +197,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
     def _request_backend(self, context, data_dict, obj_name, action):
         context_dict = self._encode_context(context, action, obj_name)
-        data = json.dumps({'context':context_dict, 'data':data_dict})
+        data = json.dumps({'context': context_dict, 'data': data_dict})
 
         url_path = "%s/%s" % (self.PLUGIN_URL_PREFIX, obj_name)
         response = self._relay_request('POST', url_path, data=data)
@@ -285,39 +228,48 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         resource_dict['fields'] = fields
         return resource_dict
 
-    def _transform_response(self, status_code, info=None, info_list=None, fields=None, obj_name=None):
-        funcname = "_make_" + obj_name + "_dict"
+    def _transform_response(self, status_code, info=None, info_list=None,
+                            fields=None, obj_name=None):
+        funcname = "_validate_" + obj_name + "_response"
         func = getattr(self, funcname)
 
         info_dicts = []
         if info:
-            info_dicts = func(info, status_code, fields)
-        else: 
-            for entry in info_list:
-                info_dict = func(entry, status_code, fields)
+            func(info, status_code, fields)
+            info_dicts = info
+        else:
+            for info_entry in info_list:
+                func(info_entry, status_code, fields)
+                info_dict = info_entry
                 info_dicts.append(info_dict)
 
         return info_dicts
 
     def _create_resource(self, res_type, context, res_data):
         res_dict = self._encode_resource(resource=res_data[res_type])
-        status_code, res_info = self._request_backend(context, res_dict, res_type, 'CREATE')
-        res_dicts = self._transform_response(status_code, info=res_info, obj_name=res_type)
+        status_code, res_info = self._request_backend(context, res_dict,
+                                                      res_type, 'CREATE')
+        res_dicts = self._transform_response(status_code, info=res_info,
+                                             obj_name=res_type)
 
         return res_dicts
 
     def _get_resource(self, res_type, context, id, fields):
         res_dict = self._encode_resource(resource_id=id, fields=fields)
-        status_code, res_info = self._request_backend(context, res_dict, res_type, 'READ')
-        res_dicts = self._transform_response(status_code, info=res_info, fields=fields, 
-                                             obj_name=res_type)
+        status_code, res_info = self._request_backend(context, res_dict,
+                                                      res_type, 'READ')
+        res_dicts = self._transform_response(status_code, info=res_info,
+                                             fields=fields, obj_name=res_type)
 
         return res_dicts
 
     def _update_resource(self, res_type, context, id, res_data):
-        res_dict = self._encode_resource(resource_id=id, resource=res_data[res_type])
-        status_code, res_info = self._request_backend(context, res_dict, res_type, 'UPDATE')
-        res_dicts = self._transform_response(status_code, info=res_info, obj_name=res_type)
+        res_dict = self._encode_resource(resource_id=id,
+                                         resource=res_data[res_type])
+        status_code, res_info = self._request_backend(context, res_dict,
+                                                      res_type, 'UPDATE')
+        res_dicts = self._transform_response(status_code, info=res_info,
+                                             obj_name=res_type)
 
         return res_dicts
 
@@ -327,28 +279,27 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
     def _list_resource(self, res_type, context, filters, fields):
         res_dict = self._encode_resource(filters=filters, fields=fields)
-        status_code, res_info = self._request_backend(context, res_dict, res_type, 'READALL')
-        res_dicts = self._transform_response(status_code, info_list=res_info, fields=fields,
-                                             obj_name=res_type)
+        status_code, res_info = self._request_backend(context, res_dict,
+                                                      res_type, 'READALL')
+        res_dicts = self._transform_response(status_code, info_list=res_info,
+                                             fields=fields, obj_name=res_type)
 
         return res_dicts
 
     def _count_resource(self, res_type, context, filters):
         res_dict = self._encode_resource(filters=filters)
-        status_code, res_count = self._request_backend(context, res_dict, res_type,
-            'READCOUNT')
+        status_code, res_count = self._request_backend(context, res_dict,
+                                                       res_type, 'READCOUNT')
 
         return res_count
 
     # Network API handlers
-    def _make_network_dict(self, entry, status_code=None, fields=None):
-        if status_code == 200:
-            return super(NeutronPluginContrailCoreV2, self)._make_network_dict(entry, fields)
-
-        if entry['type'] == 'InvalidSharedSetting':
-            raise exc.InvalidSharedSetting(network=entry['name'])
-        if entry['type'] == 'NetworkInUse':
-            raise exc.NetworkInUse(net_id=entry['id'])
+    def _validate_network_response(self, entry, status_code=None, fields=None):
+        if status_code != 200:
+            if entry['type'] == 'InvalidSharedSetting':
+                raise exc.InvalidSharedSetting(network=entry['name'])
+            if entry['type'] == 'NetworkInUse':
+                raise exc.NetworkInUse(net_id=entry['id'])
 
     def _get_network(self, context, id):
         network_dict = self._get_resource('network', context, id, None)
@@ -368,17 +319,18 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         network_dicts = self._create_resource('network', context,
                                               plugin_network)
 
-        LOG.debug("create_network(): " + pformat(network_dicts) + "\n")
+        LOG.debug("create_network(): %r", network_dicts)
         return network_dicts
 
     def get_network(self, context, network_id, fields=None):
         """
         Get the attributes of a particular Virtual Network.
         """
-        network_dicts = self._get_resource('network', context, network_id, fields)
+        network_dicts = self._get_resource('network', context, network_id,
+                                           fields)
 
-        LOG.debug("get_network(): " + pformat(network_dicts))
-        return self._fields(network_dicts, fields)
+        LOG.debug("get_network(): %r", network_dicts)
+        return network_dicts
 
     def update_network(self, context, network_id, network):
         """
@@ -388,7 +340,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         network_dicts = self._update_resource('network', context, network_id,
                                               plugin_network)
 
-        LOG.debug("update_network(): " + pformat(network_dicts))
+        LOG.debug("update_network(): %r", network_dicts)
         return network_dicts
 
     def delete_network(self, context, network_id):
@@ -396,11 +348,13 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         Deletes the network with the specified network identifier
         belonging to the specified tenant.
         """
-        status_code, msg = self._delete_resource('network', context, network_id)
+        status_code, msg = self._delete_resource('network', context,
+                                                 network_id)
 
-        LOG.debug("delete_network(): %s" % (network_id))
+        LOG.debug("delete_network(): %r", network_id)
+
         if status_code == 200:
-            return 
+            return
         elif status_code == 409:
             raise exc.NetworkInUse(net_id=network_id)
 
@@ -408,11 +362,11 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         Get the list of Virtual Networks.
         """
-        network_dicts = self._list_resource('network', context, filters, fields)
+        network_dicts = self._list_resource('network', context, filters,
+                                            fields)
 
         LOG.debug(
-            "get_networks(): filters: " + pformat(filters) + " data: "
-            + pformat(network_dicts))
+            "get_networks(): filters: %r data: %r", filters, network_dicts)
         return network_dicts
 
     def get_networks_count(self, context, filters=None):
@@ -421,24 +375,22 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         networks_count = self._count_resource('network', context, filters)
 
-        LOG.debug("get_networks_count(): filters: " + pformat(filters) + " data: " + str(networks_count['count']))
+        LOG.debug("get_networks_count(): %r", str(networks_count['count']))
         return networks_count['count']
 
     # Subnet API handlers
-    def _make_subnet_dict(self, entry, status_code=None, fields=None):
-        if status_code == 200:
-            return super(NeutronPluginContrailCoreV2, self)._make_subnet_dict(entry, fields)
-
-        if entry['type'] == 'SubnetInUse':
-            raise exc.SubnetInUse(subnet_id=entry['id'])
-        if entry['type'] == 'GatewayConflictWithAllocationPools':
-            pool_range = netaddr.IPRange(entry['pool']['start'],
-                                         entry['pool']['end'])
-            gateway_ip = entry['ip_address']
-            raise exc.GatewayConflictWithAllocationPools(pool=pool_range,
-                                                         ip_address=gateway_ip)
-        if entry['type'] == 'SubnetNotFound':
-            raise exc.SubnetNotFound(subnet_id=entry['id'])
+    def _validate_subnet_response(self, entry, status_code=None, fields=None):
+        if status_code != 200:
+            if entry['type'] == 'SubnetInUse':
+                raise exc.SubnetInUse(subnet_id=entry['id'])
+            if entry['type'] == 'GatewayConflictWithAllocationPools':
+                pool_range = netaddr.IPRange(entry['pool']['start'],
+                                             entry['pool']['end'])
+                gateway_ip = entry['ip_address']
+                raise exc.GatewayConflictWithAllocationPools(pool=pool_range,
+                    ip_address=gateway_ip)
+            if entry['type'] == 'SubnetNotFound':
+                raise exc.SubnetNotFound(subnet_id=entry['id'])
 
     def _get_subnet(self, context, id):
         subnet_dict = self._get_resource('subnet', context, id, None)
@@ -448,40 +400,11 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         all_networks = self.get_networks(context)
         all_subnets = []
         for network in all_networks:
-            subnets = [self._get_subnet(context, id) for id in network['subnets']]
+            subnets = \
+                [self._get_subnet(context, id) for id in network['subnets']]
             all_subnets.extend(subnets)
 
         return all_subnets
-
-    def _validate_subnet_cidr(self, context, network, new_subnet_cidr):
-        """Validate the CIDR for a subnet.
-
-        Verifies the specified CIDR does not overlap with the ones defined
-        for the other subnets specified for this network, or with any other
-        CIDR if overlapping IPs are disabled.
-        """
-        new_subnet_ipset = netaddr.IPSet([new_subnet_cidr])
-        if cfg.CONF.allow_overlapping_ips:
-            subnet_ids = network['subnets']
-            subnet_list = [self._get_subnet(context, id) for id in subnet_ids]
-        else:
-            subnet_list = self._get_all_subnets(context)
-
-        for subnet in subnet_list:
-            if (netaddr.IPSet([subnet['cidr']]) & new_subnet_ipset):
-                # don't give out details of the overlapping subnet
-                err_msg = (_("Requested subnet with cidr: %(cidr)s for "
-                             "network: %(network_id)s overlaps with another "
-                             "subnet") %
-                           {'cidr': new_subnet_cidr,
-                            'network_id': network['id']})
-                LOG.error(_("Validation for CIDR: %(new_cidr)s failed - "
-                            "overlaps with subnet %(subnet_id)s "
-                            "(CIDR: %(cidr)s)"),
-                          {'new_cidr': new_subnet_cidr,
-                           'subnet_id': subnet['id'],
-                           'cidr': subnet['cidr']})
-                raise exc.InvalidInput(error_message=err_msg)
 
     def create_subnet(self, context, subnet):
         """
@@ -500,7 +423,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             plugin_subnet['subnet']['gateway_ip'] = '0.0.0.0'
         if subnet['subnet']['host_routes'] == attr.ATTR_NOT_SPECIFIED:
             plugin_subnet['subnet']['host_routes'] = None
-        elif (len(subnet['subnet']['host_routes']) > 
+        elif (len(subnet['subnet']['host_routes']) >
               cfg.CONF.max_subnet_host_routes):
                 raise exc.HostRoutesExhausted(
                     subnet_id=subnet['subnet'].get('id', _('new subnet')),
@@ -508,17 +431,21 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
         self._validate_subnet(context, plugin_subnet['subnet'])
         if plugin_subnet['subnet']['allocation_pools']:
-            self._validate_allocation_pools(plugin_subnet['subnet']['allocation_pools'],
-                                            plugin_subnet['subnet']['cidr'])
-        if (plugin_subnet['subnet']['gateway_ip'] and 
+            self._validate_allocation_pools(
+                plugin_subnet['subnet']['allocation_pools'],
+                plugin_subnet['subnet']['cidr'])
+        if (plugin_subnet['subnet']['gateway_ip'] and
             plugin_subnet['subnet']['allocation_pools']):
-            self._validate_gw_out_of_pools(plugin_subnet['subnet']['gateway_ip'],
-                                           plugin_subnet['subnet']['allocation_pools'])
-        network = self._get_network(context, plugin_subnet['subnet']['network_id'])
-        self._validate_subnet_cidr(context, network, plugin_subnet['subnet']['cidr'])
+            self._validate_gw_out_of_pools(
+                plugin_subnet['subnet']['gateway_ip'],
+                plugin_subnet['subnet']['allocation_pools'])
+        network = self._get_network(context,
+                                    plugin_subnet['subnet']['network_id'])
+        self._validate_subnet_cidr(context, network,
+                                   plugin_subnet['subnet']['cidr'])
 
         subnet_dicts = self._create_resource('subnet', context, plugin_subnet)
-        LOG.debug("create_subnet(): " + pformat(subnet_dicts) + "\n")
+        LOG.debug("create_subnet(): %r", subnet_dicts)
 
         return subnet_dicts
 
@@ -528,7 +455,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         subnet_dicts = self._get_resource('subnet', context, subnet_id, fields)
 
-        LOG.debug("get_subnet(): " + pformat(subnet_dicts))
+        LOG.debug("get_subnet(): %r", subnet_dicts)
         return subnet_dicts
 
     def update_subnet(self, context, subnet_id, subnet):
@@ -542,16 +469,16 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         plugin_subnet['subnet']['cidr'] = existing_subnet['cidr']
         plugin_subnet['subnet']['id'] = existing_subnet['id']
         self._validate_subnet(context, plugin_subnet['subnet'])
-        if ('gateway_ip' in plugin_subnet['subnet'] and 
+        if ('gateway_ip' in plugin_subnet['subnet'] and
             plugin_subnet['subnet']['gateway_ip']):
-            self._validate_gw_out_of_pools(plugin_subnet['subnet']['gateway_ip'],
-                                           existing_subnet['allocation_pools'])
-
+            self._validate_gw_out_of_pools(
+                plugin_subnet['subnet']['gateway_ip'],
+                existing_subnet['allocation_pools'])
 
         subnet_dicts = self._update_resource('subnet', context, subnet_id,
                                              plugin_subnet)
 
-        LOG.debug("update_subnet(): " + pformat(subnet_dicts))
+        LOG.debug("update_subnet(): %r", subnet_dicts)
         return subnet_dicts
 
     def delete_subnet(self, context, subnet_id):
@@ -561,7 +488,8 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         status_code, msg = self._delete_resource('subnet', context, subnet_id)
 
-        LOG.debug("delete_subnet(): %s" % (subnet_id))
+        LOG.debug("delete_subnet(): %r", subnet_id)
+
         if status_code == 200:
             return
         elif status_code == 409:
@@ -574,8 +502,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         subnet_dicts = self._list_resource('subnet', context, filters, fields)
 
         LOG.debug(
-            "get_subnets(): filters: " + pformat(filters) + " data: "
-            + pformat(subnet_dicts))
+            "get_subnets(): filters: %r data: %r", filters, subnet_dicts)
         return subnet_dicts
 
     def get_subnets_count(self, context, filters=None):
@@ -584,29 +511,24 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         subnets_count = self._count_resource('subnet', context, filters)
 
-        LOG.debug("get_subnets_count(): filters: " + pformat(filters) +
-                  " data: " + str(subnets_count['count']))
+        LOG.debug("get_subnets_count(): %r", str(subnets_count['count']))
         return subnets_count['count']
 
-    def _make_port_dict(self, entry, status_code=None, fields=None):
-        if status_code == 200:
-            port_dict = super(NeutronPluginContrailCoreV2, self)._make_port_dict(
-                entry, fields)
-            self._process_portbindings_create_and_update(None, entry,
-                                                         port_dict)
-            return port_dict
-
-        if entry['type'] == 'IpAddressInUse':
-            raise exc.IpAddressInUse(net_id=entry['network_id'],
-                                     ip_address=entry['ip_address'])
-        if entry['type'] == 'IpAddressGenerationFailure':
-            raise exc.IpAddressGenerationFailure(net_id=entry['network_id'])
+    def _validate_port_response(self, entry, status_code=None, fields=None):
+        if status_code != 200:
+            if entry['type'] == 'IpAddressInUse':
+                raise exc.IpAddressInUse(net_id=entry['network_id'],
+                                         ip_address=entry['ip_address'])
+            if entry['type'] == 'IpAddressGenerationFailure':
+                raise exc.IpAddressGenerationFailure(
+                    net_id=entry['network_id'])
 
     def _extend_port_dict_security_group(self, port_res, port_db):
         # Security group bindings will be retrieved from the sqlalchemy
         # model. As they're loaded eagerly with ports because of the
         # joined load they will not cause an extra query.
-        port_res[securitygroup.SECURITYGROUPS] = port_db.get('security_groups', []) or []
+        port_res[securitygroup.SECURITYGROUPS] = \
+            port_db.get('security_groups', []) or []
         return port_res
 
     def _get_port(self, context, id):
@@ -633,8 +555,9 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                 filter = {'network_id': [network_id]}
                 subnets = self.get_subnets(context, filters=filter)
                 for subnet in subnets:
-                    if super(NeutronPluginContrailCoreV2, self)._check_subnet_ip(subnet['cidr'],
-                                                          fixed['ip_address']):
+                    if super(
+                        NeutronPluginContrailCoreV2, self)._check_subnet_ip(
+                            subnet['cidr'], fixed['ip_address']):
                         found = True
                         subnet_id = subnet['id']
                         break
@@ -656,8 +579,9 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             if 'ip_address' in fixed:
                 # Ensure that the IP is valid on the subnet
                 if (not found and
-                    not super(NeutronPluginContrailCoreV2, self)._check_subnet_ip(
-                        subnet['cidr'], fixed['ip_address'])):
+                    not super(
+                        NeutronPluginContrailCoreV2, self)._check_subnet_ip(
+                            subnet['cidr'], fixed['ip_address'])):
                     msg = _('IP address %s is not a valid IP for the defined '
                             'subnet') % fixed['ip_address']
                     raise exc.InvalidInput(error_message=msg)
@@ -723,7 +647,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                                           plugin_port['port']['fixed_ips'])
 
         port_dicts = self._create_resource('port', context, plugin_port)
-        LOG.debug("create_port(): " + pformat(port_dicts) + "\n")
+        LOG.debug("create_port(): %r", port_dicts)
 
         return port_dicts
 
@@ -733,7 +657,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         port_dicts = self._get_resource('port', context, port_id, fields)
 
-        LOG.debug("get_port(): " + pformat(port_dicts))
+        LOG.debug("get_port(): %r", port_dicts)
         return port_dicts
 
     def update_port(self, context, port_id, port):
@@ -741,7 +665,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         Updates the attributes of a port on the specified Virtual Network.
         """
         plugin_port = copy.deepcopy(port)
- 
+
         if 'fixed_ips' in plugin_port['port']:
             original = self._get_port(context, port_id)
             added_ips, prev_ips = self._update_ips_for_port(
@@ -752,7 +676,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         port_dicts = self._update_resource('port', context, port_id,
                                            plugin_port)
 
-        LOG.debug("update_port(): " + pformat(port_dicts))
+        LOG.debug("update_port(): %r", port_dicts)
         return port_dicts
 
     def delete_port(self, context, port_id):
@@ -764,7 +688,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         self._delete_resource('port', context, port_id)
 
-        LOG.debug("delete_port(): %s" % (port_id))
+        LOG.debug("delete_port(): %r", port_id)
 
     def get_ports(self, context, filters=None, fields=None):
         """
@@ -774,8 +698,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         port_dicts = self._list_resource('port', context, filters, fields)
 
         LOG.debug(
-            "get_ports(): filters: " + pformat(filters) + " data: "
-            + pformat(port_dicts))
+            "get_ports(): filters: %r data: %r", filters, port_dicts)
         return port_dicts
 
     def get_ports_count(self, context, filters=None):
@@ -784,29 +707,12 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         ports_count = self._count_resource('port', context, filters)
 
-        LOG.debug("get_ports_count(): filters: " + pformat(filters) +
-                  " data: " + str(ports_count['count']))
+        LOG.debug("get_ports_count(): %r", str(ports_count['count']))
         return ports_count['count']
 
-    def _make_router_dict(self, router, status_code=None, fields=None,
+    def _validate_router_response(self, router, status_code=None, fields=None,
                           process_extensions=True):
-        res = {'id': router['id'],
-               'name': router['name'],
-               'tenant_id': router['tenant_id'],
-               'admin_state_up': router['admin_state_up'],
-               'status': router['status'],
-               'external_gateway_info': None,
-               'gw_port_id': router['gw_port_id']}
-        if router['gw_port_id']:
-            nw_id = router['gw_port_id']['network_id']
-            res['external_gateway_info'] = {'network_id': nw_id}
-        # NOTE(salv-orlando): The following assumes this mixin is used in a
-        # class inheriting from CommonDbMixin, which is true for all existing
-        # plugins.
-        if process_extensions:
-            self._apply_dict_extend_functions(
-                l3.ROUTERS, res, router)
-        return self._fields(res, fields)
+        pass
 
     # Router API handlers
     def create_router(self, context, router):
@@ -817,7 +723,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         plugin_router = copy.deepcopy(router)
 
         router_dicts = self._create_resource('router', context, plugin_router)
-        LOG.debug("create_router(): " + pformat(router_dicts) + "\n")
+        LOG.debug("create_router(): %r", router_dicts)
 
         return router_dicts
 
@@ -827,7 +733,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         router_dicts = self._get_resource('router', context, router_id, fields)
 
-        LOG.debug("get_router(): " + pformat(router_dicts))
+        LOG.debug("get_router(): %r", router_dicts)
         return router_dicts
 
     def update_router(self, context, router_id, router):
@@ -838,7 +744,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         router_dicts = self._update_resource('router', context, router_id,
                                              plugin_router)
 
-        LOG.debug("update_router(): " + pformat(router_dicts))
+        LOG.debug("update_router(): %r", router_dicts)
         return router_dicts
 
     def delete_router(self, context, router_id):
@@ -847,7 +753,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         self._delete_resource('router', context, router_id)
 
-        LOG.debug("delete_router(): %s" % (router_id))
+        LOG.debug("delete_router(): %r", router_id)
 
     def get_routers(self, context, filters=None, fields=None):
         """
@@ -856,8 +762,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         router_dicts = self._list_resource('router', context, filters, fields)
 
         LOG.debug(
-            "get_routers(): filters: " + pformat(filters) + " data: "
-            + pformat(router_dicts))
+            "get_routers(): filters: %r data: %r", filters, router_dicts)
         return router_dicts
 
     def get_routers_count(self, context, filters=None):
@@ -866,61 +771,48 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         routers_count = self._count_resource('router', context, filters)
 
-        LOG.debug("get_routers_count(): filters: " + pformat(filters) +
-                  " data: " + str(routers_count['count']))
+        LOG.debug("get_routers_count(): %r", str(routers_count['count']))
         return routers_count['count']
 
     def add_router_interface(self, context, router_id, interface_info):
+        """
+        Add interface to a router
+        """
         if not interface_info:
             msg = _("Either subnet_id or port_id must be specified")
             raise exc.BadRequest(resource='router', msg=msg)
 
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            if 'port_id' in interface_info:
-                if 'subnet_id' in interface_info:
-                    msg = _("Cannot specify both subnet-id and port-id")
-                    raise exc.BadRequest(resource='router', msg=msg)
+        if 'port_id' in interface_info:
+            if 'subnet_id' in interface_info:
+                msg = _("Cannot specify both subnet-id and port-id")
+                raise exc.BadRequest(resource='router', msg=msg)
 
-                port_id = interface_info['port_id']
-                return cfgdb.add_router_interface(router_id, port_id=port_id)
-            elif 'subnet_id' in interface_info:
-                subnet_id = interface_info['subnet_id']
-                return cfgdb.add_router_interface(router_id,
-                                                  subnet_id=subnet_id)
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        res_dict = self._encode_resource(resource_id=router_id,
+                                         resource=interface_info)
+        status_code, res_info = self._request_backend(context, res_dict,
+                                                      'router', 'ADDINTERFACE')
+
+        return res_info
 
     def remove_router_interface(self, context, router_id, interface_info):
+        """
+        Delete interface from a router
+        """
         if not interface_info:
             msg = _("Either subnet_id or port_id must be specified")
             raise exc.BadRequest(resource='router', msg=msg)
 
-        try:
-            cfgdb = NeutronPluginContrailCoreV2._get_user_cfgdb(context)
-            if 'port_id' in interface_info:
-                port_id = interface_info['port_id']
-                return cfgdb.remove_router_interface(router_id,
-                                                     port_id=port_id)
-            elif 'subnet_id' in interface_info:
-                subnet_id = interface_info['subnet_id']
-                return cfgdb.remove_router_interface(router_id,
-                                                     subnet_id=subnet_id)
-        except Exception as e:
-            cgitb.Hook(format="text").handle(sys.exc_info())
-            raise e
+        res_dict = self._encode_resource(resource_id=router_id,
+                                         resource=interface_info)
+        status_code, res_info = self._request_backend(context, res_dict,
+                                                      'router', 'DELINTERFACE')
+
+        return res_info
 
     # Floating IP API handlers
-    def _make_floatingip_dict(self, floatingip, status_code=None, fields=None):
-        res = {'id': floatingip['id'],
-               'tenant_id': floatingip['tenant_id'],
-               'floating_ip_address': floatingip['floating_ip_address'],
-               'floating_network_id': floatingip['floating_network_id'],
-               'router_id': floatingip['router_id'],
-               'port_id': floatingip['port_id'],
-               'fixed_ip_address': floatingip['fixed_ip_address']}
-        return self._fields(res, fields)
+    def _validate_floatingip_response(self, floatingip, status_code=None,
+                                      fields=None):
+        pass
 
     def create_floatingip(self, context, floatingip):
         """
@@ -929,7 +821,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         plugin_fip = copy.deepcopy(floatingip)
 
         fip_dicts = self._create_resource('floatingip', context, plugin_fip)
-        LOG.debug("create_floatingip(): " + pformat(fip_dicts) + "\n")
+        LOG.debug("create_floatingip(): %r", fip_dicts)
 
         return fip_dicts
 
@@ -941,7 +833,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         fip_dicts = self._update_resource('floatingip', context, fip_id,
                                           plugin_fip)
 
-        LOG.debug("update_floatingip(): " + pformat(fip_dicts))
+        LOG.debug("update_floatingip(): %r", fip_dicts)
         return fip_dicts
 
     def get_floatingip(self, context, fip_id, fields=None):
@@ -950,7 +842,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         fip_dicts = self._get_resource('floatingip', context, fip_id, fields)
 
-        LOG.debug("get_floatingip(): " + pformat(fip_dicts))
+        LOG.debug("get_floatingip(): %r", fip_dicts)
         return fip_dicts
 
     def delete_floatingip(self, context, fip_id):
@@ -959,7 +851,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         self._delete_resource('floatingip', context, fip_id)
 
-        LOG.debug("delete_floatingip(): %s" % (fip_id))
+        LOG.debug("delete_floatingip(): %r", fip_id)
 
     def get_floatingips(self, context, filters=None, fields=None):
         """
@@ -968,8 +860,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         fip_dicts = self._list_resource('floatingip', context, filters, fields)
 
         LOG.debug(
-            "get_floatingips(): filters: " + pformat(filters) + " data: "
-            + pformat(fip_dicts))
+            "get_floatingips(): filters: %r data: %r", filters, fip_dicts)
         return fip_dicts
 
     def get_floatingips_count(self, context, filters=None):
@@ -978,8 +869,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         fips_count = self._count_resource('floatingip', context, filters)
 
-        LOG.debug("get_floatingips_count(): filters: " + pformat(filters) +
-                  " data: " + str(fips_count['count']))
+        LOG.debug("get_floatingips_count(): %r", str(fips_count['count']))
         return fips_count['count']
 
     def plug_interface(self, tenant_id, net_id, port_id, remote_interface_id):
@@ -1005,35 +895,22 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         db.port_unset_attachment(port_id, net_id)
 
     # Security Group handlers
-    def _make_security_group_rule_dict(self, security_group_rule, status_code=None, fields=None):
+    def _validate_security_group_rule_response(self, security_group_rule,
+                                               status_code=None, fields=None):
         if status_code != 200:
             if security_group_rule['type'] == 'BadRequest':
-                raise exc.BadRequest(resource='security-group-rule', msg=security_group_rule['msg'])
+                raise exc.BadRequest(resource='security-group-rule',
+                                     msg=security_group_rule['msg'])
             if security_group_rule['type'] == 'Conflict':
-                raise exc.Conflict(resource='security-group-rule', msg=security_group_rule['msg'])
+                raise exc.Conflict(resource='security-group-rule',
+                                   msg=security_group_rule['msg'])
             if security_group_rule['type'] == 'NotFound':
-                raise exc.NotFound(resource='security-group-rule', msg=security_group_rule['msg'])
-        res = {'id': security_group_rule['id'],
-               'tenant_id': security_group_rule['tenant_id'],
-               'security_group_id': security_group_rule['security_group_id'],
-               'ethertype': security_group_rule['ethertype'],
-               'direction': security_group_rule['direction'],
-               'protocol': security_group_rule['protocol'],
-               'port_range_min': security_group_rule['port_range_min'],
-               'port_range_max': security_group_rule['port_range_max'],
-               'remote_ip_prefix': security_group_rule['remote_ip_prefix'],
-               'remote_group_id': security_group_rule['remote_group_id']}
+                raise exc.NotFound(resource='security-group-rule',
+                                   msg=security_group_rule['msg'])
 
-        return self._fields(res, fields)
-
-    def _make_security_group_dict(self, security_group, status_code=None, fields=None):
-        res = {'id': security_group['id'],
-               'name': security_group['name'],
-               'tenant_id': security_group['tenant_id'],
-               'description': security_group.get('description')}
-        res['security_group_rules'] = [self._make_security_group_rule_dict(r, status_code)
-                                       for r in security_group.get('rules', [])]
-        return self._fields(res, fields)
+    def _validate_security_group_response(self, security_group,
+                                          status_code=None, fields=None):
+        pass
 
     def create_security_group(self, context, security_group):
         """
@@ -1042,8 +919,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         plugin_sg = copy.deepcopy(security_group)
 
         sg_dicts = self._create_resource('security_group', context, plugin_sg)
-        LOG.debug("create_security_group(): " + pformat(sg_dicts) + "\n")
-
+        LOG.debug("create_security_group(): %r", sg_dicts)
         return sg_dicts
 
     def get_security_group(self, context, sg_id, fields=None):
@@ -1052,7 +928,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         sg_dicts = self._get_resource('security_group', context, sg_id, fields)
 
-        LOG.debug("get_security_group(): " + pformat(sg_dicts))
+        LOG.debug("get_security_group(): %r", sg_dicts)
         return sg_dicts
 
     def update_security_group(self, context, sg_id, security_group):
@@ -1063,7 +939,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         sg_dicts = self._update_resource('security_group', context, sg_id,
                                           plugin_sg)
 
-        LOG.debug("update_security_group(): " + pformat(sg_dicts))
+        LOG.debug("update_security_group(): %r", sg_dicts)
         return sg_dicts
 
     def delete_security_group(self, context, sg_id):
@@ -1076,7 +952,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                 raise securitygroup.SecurityGroupCannotRemoveDefault()
             if value['type'] == 'SecurityGroupInUse':
                 raise securitygroup.SecurityGroupInUse(id=sg_id)
-        LOG.debug("delete_security_group(): %s" % (sg_id))
+        LOG.debug("delete_security_group(): %r", sg_id)
 
     def get_security_groups(self, context, filters=None, fields=None,
                             sorts=None, limit=None, marker=None,
@@ -1088,8 +964,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                                        filters, fields)
 
         LOG.debug(
-            "get_security_groups(): filters: " + pformat(filters) + " data: "
-            + pformat(sg_dicts))
+            "get_security_groups(): filters: %r data: %r", filters, sg_dicts)
         return sg_dicts
 
     def create_security_group_rule(self, context, security_group_rule):
@@ -1100,8 +975,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
         sg_rule_dicts = self._create_resource('security_group_rule', context,
                                               plugin_sg_rule)
-        LOG.debug("create_security_group_rule(): " + 
-                  pformat(sg_rule_dicts) + "\n")
+        LOG.debug("create_security_group_rule(): %r", sg_rule_dicts)
 
         return sg_rule_dicts
 
@@ -1111,7 +985,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         self._delete_resource('security_group_rule', context, sg_rule_id)
 
-        LOG.debug("delete_security_group_rule(): %s" % (sg_rule_id))
+        LOG.debug("delete_security_group_rule(): %r", sg_rule_id)
 
     def get_security_group_rule(self, context, sg_rule_id, fields=None):
         """
@@ -1120,7 +994,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         sg_rule_dicts = self._get_resource('security_group_rule', context,
                                            sg_rule_id, fields)
 
-        LOG.debug("get_security_group_rule(): " + pformat(sg_rule_dicts))
+        LOG.debug("get_security_group_rule(): %r", sg_rule_dicts)
         return sg_rule_dicts
 
     def get_security_group_rules(self, context, filters=None, fields=None,
@@ -1133,6 +1007,6 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                                             filters, fields)
 
         LOG.debug(
-            "get_security_group_rules(): filters: " + pformat(filters)
-            + " data: " + pformat(sg_rule_dicts))
+            "get_security_group_rules(): filters: %r data: %r",
+            filters, sg_rule_dicts)
         return sg_rule_dicts
