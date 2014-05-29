@@ -31,7 +31,7 @@ class NeutronPluginContrailIpam(object):
         self._core = core_instance
 
     def _validate_ipam_response(self, entry, status_code=None, fields=None):
-        pass
+        return entry
 
     def create_ipam(self, context, ipam):
         """

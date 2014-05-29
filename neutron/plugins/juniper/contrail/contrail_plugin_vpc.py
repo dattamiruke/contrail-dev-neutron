@@ -31,7 +31,7 @@ class NeutronPluginContrailVpc(object):
     # VPC route table handlers
     def _validate_route_table_routes_response(self, route_table_route,
         fields=None):
-        pass
+        return entry
 
     def _make_route_table_dict(self, route_table, status_code=None,
                                fields=None):
