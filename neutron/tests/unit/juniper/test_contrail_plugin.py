@@ -23,15 +23,11 @@ import json
 import netaddr
 import mock
 from oslo.config import cfg
-import webob.exc
 
 from neutron.api import extensions
-import neutron.db.api
-from neutron.manager import NeutronManager
 from neutron.tests.unit import test_db_plugin as test_plugin
 from neutron.tests.unit import test_extensions
 from neutron.tests.unit import test_extension_security_group as test_sg
-from neutron.tests.unit import testlib_api
 
 VN_LIST = []
 
@@ -56,12 +52,6 @@ class MockRequestsResponse(mock.MagicMock):
         super(MockRequestsResponse, self).__init__()
         self.status_code = code
         self.content = resp_data
-
-    def set_status_code(self, resp_data):
-        status_code = resp_data
-
-    def set_content(self, data):
-        content = data
 
 
 def fake_get_network(net_id):
@@ -469,7 +459,6 @@ class FakeSubnets(FakeResources):
         return response
 
     def delete(self, id, context):
-        non_network_owned_ports = self._ports_on_subnet(id, False)
         if self._ports_on_subnet(id):
             exc_info = {'type': 'SubnetInUse',
                         'id': id}
@@ -649,7 +638,6 @@ class FakeSecurityGroups(FakeResources):
         super(FakeSecurityGroups, self).__init__('security_group')
 
     def _update_rules(self, resource):
-        sg_id = resource['id']
         resource['rules'] = []
         for rule in self._store['security_group_rule'].values():
             if rule['security_group_id'] == resource['id']:
@@ -660,7 +648,7 @@ class FakeSecurityGroups(FakeResources):
         sg_id = sg_data.get('id', str(uuid.uuid4()))
         sg_data['id'] = sg_id
         tenant_id = sg_data['tenant_id']
-        response = super(FakeSecurityGroups, self).create(sg_data)
+        super(FakeSecurityGroups, self).create(sg_data)
         rule1 = {'remote_group_id': None, 'direction': 'egress',
                  'protocol': None, 'ethertype': 'IPv4',
                  'port_range_max': None, 'security_group_id': sg_id,
@@ -854,9 +842,11 @@ class FakeAddrMgmt(object):
                 return subnet_dict['id'], address
 
     def alloc_ip(self, network_id, port_id, ip_version):
-        subnet_dicts = [sn for sn in self._subnet_dicts.values(
-            ) if sn['network_id'] == network_id and sn[
-            'ip_version'] == ip_version]
+        subnet_dicts = [
+            sn for sn in self._subnet_dicts.values() if sn[
+                'network_id'] == network_id and sn[
+                'ip_version'] == ip_version
+        ]
 
         for subnet_dict in subnet_dicts:
             for pool in subnet_dict['alloc_pools']:
@@ -890,7 +880,7 @@ def initialize_fakes():
         'port': FakePorts(addr_mgmt),
         'security_group': FakeSecurityGroups(),
         'security_group_rule': FakeSecurityGroupRules(),
-        }
+    }
 
 
 def reset_fakes():

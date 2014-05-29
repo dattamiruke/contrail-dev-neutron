@@ -20,9 +20,9 @@ import copy
 
 from neutron.api.v2 import attributes as attr
 from neutron.common import exceptions as exc
+from neutron.db import api as db
 from neutron.db import db_base_plugin_v2
-from neutron.db import portbindings_base
-from neutron.db import l3_db
+from neutron.extensions import l3
 from neutron.extensions import securitygroup, external_net
 from neutron.openstack.common import importutils
 from neutron.openstack.common import jsonutils as json
@@ -309,8 +309,6 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         Creates a new Virtual Network, and assigns it
         a symbolic name.
         """
-        tenant_id = self._get_tenant_id_for_create(context, network['network'])
-
         plugin_network = copy.deepcopy(network)
         if network['network']['router:external'] == attr.ATTR_NOT_SPECIFIED:
             del plugin_network['network']['router:external']
@@ -442,8 +440,6 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         Creates a new subnet, and assigns it a symbolic name.
         """
-        tenant_id = self._get_tenant_id_for_create(context, subnet['subnet'])
-
         plugin_subnet = copy.deepcopy(subnet)
         if subnet['subnet']['dns_nameservers'] == attr.ATTR_NOT_SPECIFIED:
             plugin_subnet['subnet']['dns_nameservers'] = None
@@ -642,7 +638,6 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
     def _update_ips_for_port(self, context, network_id, port_id, original_ips,
                              new_ips):
         """Add or remove IPs from the port."""
-        ips = []
         # These ips are still on the port and haven't been removed
         prev_ips = []
 
@@ -669,8 +664,6 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         Creates a port on the specified Virtual Network.
         """
-        tenant_id = self._get_tenant_id_for_create(context, port['port'])
-
         plugin_port = copy.deepcopy(port)
         if port['port']['port_security_enabled'] == attr.ATTR_NOT_SPECIFIED:
             plugin_port['port']['port_security_enabled'] = None
