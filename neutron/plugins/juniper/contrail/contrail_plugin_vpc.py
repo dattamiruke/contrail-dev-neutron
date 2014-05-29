@@ -29,9 +29,11 @@ class NeutronPluginContrailVpc(object):
         self._core = core_instance
 
     # VPC route table handlers
-    def _validate_route_table_routes_response(self, route_table_route,
-        fields=None):
-        return entry
+    def _make_route_table_routes_dict(self, route_table_route, fields=None):
+        res = {'prefix': route_table_route['prefix'],
+               'next_hop': route_table_route['next_hop']}
+
+        return self._core._fields(res, fields)
 
     def _make_route_table_dict(self, route_table, status_code=None,
                                fields=None):

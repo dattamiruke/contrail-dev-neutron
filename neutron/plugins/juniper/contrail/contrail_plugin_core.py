@@ -228,7 +228,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
 
     def _transform_response(self, status_code, info=None, info_list=None,
                             fields=None, obj_name=None):
-        funcname = "_validate_" + obj_name + "_response"
+        funcname = "_make_" + obj_name + "_dict"
         func = getattr(self, funcname)
 
         info_dicts = []
@@ -290,40 +290,19 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         return res_count
 
     # Network API handlers
-    def _validate_network_response(self, entry, status_code=None, fields=None):
-        if status_code != 200:
-            if entry['type'] == 'InvalidSharedSetting':
-                raise exc.InvalidSharedSetting(network=entry['name'])
-            if entry['type'] == 'NetworkInUse':
-                raise exc.NetworkInUse(net_id=entry['id'])
+    def _make_network_dict(self, entry, status_code=None, fields=None):
+        if status_code == 200:
+            return super(NeutronPluginContrailCoreV2, self)._make_network_dict(
+                entry, fields)
 
-        return self._make_network_dict(entry)
+        if entry['type'] == 'InvalidSharedSetting':
+            raise exc.InvalidSharedSetting(network=entry['name'])
+        if entry['type'] == 'NetworkInUse':
+            raise exc.NetworkInUse(net_id=entry['id'])
 
     def _get_network(self, context, id):
         network_dict = self._get_resource('network', context, id, None)
         return network_dict
-
-    def _fields(self, resource, fields):
-        if fields:
-            return dict(((key, item) for key, item in resource.items()
-                         if key in fields))
-        return resource
-
-    def _make_network_dict(self, network, fields=None,
-                           process_extensions=True):
-        res = {'id': network['id'],
-               'name': network['name'],
-               'tenant_id': network['tenant_id'],
-               'admin_state_up': network['admin_state_up'],
-               'status': network['status'],
-               'shared': network['shared'],
-               'subnets': [subnet['id']
-                           for subnet in network['subnets']]}
-        # Call auxiliary extend functions, if any
-        if process_extensions:
-            self._apply_dict_extend_functions(
-                attr.NETWORKS, res, network)
-        return self._fields(res, fields)
 
     def create_network(self, context, network):
         """
@@ -399,19 +378,21 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         return networks_count['count']
 
     # Subnet API handlers
-    def _validate_subnet_response(self, entry, status_code=None, fields=None):
-        if status_code != 200:
-            if entry['type'] == 'SubnetInUse':
-                raise exc.SubnetInUse(subnet_id=entry['id'])
-            if entry['type'] == 'GatewayConflictWithAllocationPools':
-                pool_range = netaddr.IPRange(entry['pool']['start'],
-                                             entry['pool']['end'])
-                gateway_ip = entry['ip_address']
-                raise exc.GatewayConflictWithAllocationPools(pool=pool_range,
-                    ip_address=gateway_ip)
-            if entry['type'] == 'SubnetNotFound':
-                raise exc.SubnetNotFound(subnet_id=entry['id'])
-        return entry
+    def _make_subnet_dict(self, entry, status_code=None, fields=None):
+        if status_code == 200:
+            return super(NeutronPluginContrailCoreV2, self)._make_subnet_dict(
+                entry, fields)
+
+        if entry['type'] == 'SubnetInUse':
+            raise exc.SubnetInUse(subnet_id=entry['id'])
+        if entry['type'] == 'GatewayConflictWithAllocationPools':
+            pool_range = netaddr.IPRange(entry['pool']['start'],
+                                         entry['pool']['end'])
+            gateway_ip = entry['ip_address']
+            raise exc.GatewayConflictWithAllocationPools(pool=pool_range,
+                ip_address=gateway_ip)
+        if entry['type'] == 'SubnetNotFound':
+            raise exc.SubnetNotFound(subnet_id=entry['id'])
 
     def _get_subnet(self, context, id):
         subnet_dict = self._get_resource('subnet', context, id, None)
@@ -426,6 +407,36 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             all_subnets.extend(subnets)
 
         return all_subnets
+
+    def _validate_subnet_cidr(self, context, network, new_subnet_cidr):
+        """Validate the CIDR for a subnet.
+
+        Verifies the specified CIDR does not overlap with the ones defined
+        for the other subnets specified for this network, or with any other
+        CIDR if overlapping IPs are disabled.
+        """
+        new_subnet_ipset = netaddr.IPSet([new_subnet_cidr])
+        if cfg.CONF.allow_overlapping_ips:
+            subnet_ids = network['subnets']
+            subnet_list = [self._get_subnet(context, id) for id in subnet_ids]
+        else:
+            subnet_list = self._get_all_subnets(context)
+
+        for subnet in subnet_list:
+            if (netaddr.IPSet([subnet['cidr']]) & new_subnet_ipset):
+                # don't give out details of the overlapping subnet
+                err_msg = (_("Requested subnet with cidr: %(cidr)s for "
+                             "network: %(network_id)s overlaps with another "
+                             "subnet") %
+                           {'cidr': new_subnet_cidr,
+                            'network_id': network['id']})
+                LOG.error(_("Validation for CIDR: %(new_cidr)s failed - "
+                            "overlaps with subnet %(subnet_id)s "
+                            "(CIDR: %(cidr)s)"),
+                          {'new_cidr': new_subnet_cidr,
+                           'subnet_id': subnet['id'],
+                           'cidr': subnet['cidr']})
+                raise exc.InvalidInput(error_message=err_msg)
 
     def create_subnet(self, context, subnet):
         """
@@ -442,6 +453,12 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             plugin_subnet['subnet']['gateway_ip'] = None
         if subnet['subnet']['gateway_ip'] == None:
             plugin_subnet['subnet']['gateway_ip'] = '0.0.0.0'
+        if 'ipv6_ra_mode' in subnet['subnet']:
+            if subnet['subnet']['ipv6_ra_mode'] == attr.ATTR_NOT_SPECIFIED:
+                plugin_subnet['subnet']['ipv6_ra_mode'] = None
+        if 'ipv6_address_mode' in subnet['subnet']:
+            if subnet['subnet']['ipv6_address_mode'] == attr.ATTR_NOT_SPECIFIED:
+                plugin_subnet['subnet']['ipv6_address_mode'] = None
         if subnet['subnet']['host_routes'] == attr.ATTR_NOT_SPECIFIED:
             plugin_subnet['subnet']['host_routes'] = None
         elif (len(subnet['subnet']['host_routes']) >
@@ -535,14 +552,18 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         LOG.debug("get_subnets_count(): %r", str(subnets_count['count']))
         return subnets_count['count']
 
-    def _validate_port_response(self, entry, status_code=None, fields=None):
-        if status_code != 200:
-            if entry['type'] == 'IpAddressInUse':
-                raise exc.IpAddressInUse(net_id=entry['network_id'],
-                                         ip_address=entry['ip_address'])
-            if entry['type'] == 'IpAddressGenerationFailure':
-                raise exc.IpAddressGenerationFailure(
-                    net_id=entry['network_id'])
+    def _make_port_dict(self, entry, status_code=None, fields=None):
+        if status_code == 200:
+            port_dict = \
+                super(NeutronPluginContrailCoreV2, self)._make_port_dict(
+                    entry, fields)
+            return port_dict
+
+        if entry['type'] == 'IpAddressInUse':
+            raise exc.IpAddressInUse(net_id=entry['network_id'],
+                                     ip_address=entry['ip_address'])
+        if entry['type'] == 'IpAddressGenerationFailure':
+            raise exc.IpAddressGenerationFailure(net_id=entry['network_id'])
         return entry
 
     def _extend_port_dict_security_group(self, port_res, port_db):
@@ -732,9 +753,25 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         LOG.debug("get_ports_count(): %r", str(ports_count['count']))
         return ports_count['count']
 
-    def _validate_router_response(self, router, status_code=None, fields=None,
+    def _make_router_dict(self, router, status_code=None, fields=None,
                           process_extensions=True):
-        return entry
+        res = {'id': router['id'],
+               'name': router['name'],
+               'tenant_id': router['tenant_id'],
+               'admin_state_up': router['admin_state_up'],
+               'status': router['status'],
+               'external_gateway_info': None,
+               'gw_port_id': router['gw_port_id']}
+        if router['gw_port_id']:
+            nw_id = router['gw_port_id']['network_id']
+            res['external_gateway_info'] = {'network_id': nw_id}
+        # NOTE(salv-orlando): The following assumes this mixin is used in a
+        # class inheriting from CommonDbMixin, which is true for all existing
+        # plugins.
+        if process_extensions:
+            self._apply_dict_extend_functions(
+                l3.ROUTERS, res, router)
+        return self._fields(res, fields)
 
     # Router API handlers
     def create_router(self, context, router):
@@ -832,9 +869,15 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         return res_info
 
     # Floating IP API handlers
-    def _validate_floatingip_response(self, floatingip, status_code=None,
-                                      fields=None):
-        return entry
+    def _make_floatingip_dict(self, floatingip, status_code=None, fields=None):
+        res = {'id': floatingip['id'],
+               'tenant_id': floatingip['tenant_id'],
+               'floating_ip_address': floatingip['floating_ip_address'],
+               'floating_network_id': floatingip['floating_network_id'],
+               'router_id': floatingip['router_id'],
+               'port_id': floatingip['port_id'],
+               'fixed_ip_address': floatingip['fixed_ip_address']}
+        return self._fields(res, fields)
 
     def create_floatingip(self, context, floatingip):
         """
@@ -917,8 +960,8 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         db.port_unset_attachment(port_id, net_id)
 
     # Security Group handlers
-    def _validate_security_group_rule_response(self, security_group_rule,
-                                               status_code=None, fields=None):
+    def _make_security_group_rule_dict(self, security_group_rule,
+                                       status_code=None, fields=None):
         if status_code != 200:
             if security_group_rule['type'] == 'BadRequest':
                 raise exc.BadRequest(resource='security-group-rule',
@@ -929,11 +972,29 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             if security_group_rule['type'] == 'NotFound':
                 raise exc.NotFound(resource='security-group-rule',
                                    msg=security_group_rule['msg'])
-        return entry
+        res = {'id': security_group_rule['id'],
+               'tenant_id': security_group_rule['tenant_id'],
+               'security_group_id': security_group_rule['security_group_id'],
+               'ethertype': security_group_rule['ethertype'],
+               'direction': security_group_rule['direction'],
+               'protocol': security_group_rule['protocol'],
+               'port_range_min': security_group_rule['port_range_min'],
+               'port_range_max': security_group_rule['port_range_max'],
+               'remote_ip_prefix': security_group_rule['remote_ip_prefix'],
+               'remote_group_id': security_group_rule['remote_group_id']}
 
-    def _validate_security_group_response(self, security_group,
-                                          status_code=None, fields=None):
-        return entry
+        return self._fields(res, fields)
+
+    def _make_security_group_dict(self, security_group, status_code=None,
+                                  fields=None):
+        res = {'id': security_group['id'],
+               'name': security_group['name'],
+               'tenant_id': security_group['tenant_id'],
+               'description': security_group.get('description')}
+        res['security_group_rules'] = \
+            [self._make_security_group_rule_dict(r, status_code)
+             for r in security_group.get('rules', [])]
+        return self._fields(res, fields)
 
     def create_security_group(self, context, security_group):
         """

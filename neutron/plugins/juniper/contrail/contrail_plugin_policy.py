@@ -30,7 +30,7 @@ class NeutronPluginContrailPolicy(object):
     def set_core(self, core_instance):
         self._core = core_instance
 
-    def _validate_policy_response(self, entry, status_code=None, fields=None):
+    def _make_policy_dict(self, entry, status_code=None, fields=None):
         return entry
 
     def create_policy(self, context, policy):
