@@ -43,7 +43,7 @@ vnc_opts = [
     cfg.BoolOpt('multi_tenancy', default=False,
                 help='Multi Tenancy support'),
     cfg.StrOpt('contrail_extensions', default='',
-                help='Contrail extensions support'),
+               help='Contrail extensions support'),
     cfg.IntOpt('max_retries', default=-1,
                help='Maximum retries to connect to VNC Server'),
     cfg.IntOpt('retry_interval', default=3,
@@ -216,7 +216,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         return cdict
 
     def _encode_resource(self, resource_id=None, resource=None, fields=None,
-                        filters=None):
+                         filters=None):
         resource_dict = {}
         if id:
             resource_dict['id'] = resource_id
@@ -390,7 +390,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                                          entry['pool']['end'])
             gateway_ip = entry['ip_address']
             raise exc.GatewayConflictWithAllocationPools(pool=pool_range,
-                ip_address=gateway_ip)
+                                                         ip_address=gateway_ip)
         if entry['type'] == 'SubnetNotFound':
             raise exc.SubnetNotFound(subnet_id=entry['id'])
 
@@ -451,13 +451,14 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
             plugin_subnet['subnet']['allocation_pools'] = None
         if subnet['subnet']['gateway_ip'] == attr.ATTR_NOT_SPECIFIED:
             plugin_subnet['subnet']['gateway_ip'] = None
-        if subnet['subnet']['gateway_ip'] == None:
+        if subnet['subnet']['gateway_ip'] is None:
             plugin_subnet['subnet']['gateway_ip'] = '0.0.0.0'
         if 'ipv6_ra_mode' in subnet['subnet']:
             if subnet['subnet']['ipv6_ra_mode'] == attr.ATTR_NOT_SPECIFIED:
                 plugin_subnet['subnet']['ipv6_ra_mode'] = None
         if 'ipv6_address_mode' in subnet['subnet']:
-            if subnet['subnet']['ipv6_address_mode'] == attr.ATTR_NOT_SPECIFIED:
+            if subnet['subnet'][
+                    'ipv6_address_mode'] == attr.ATTR_NOT_SPECIFIED:
                 plugin_subnet['subnet']['ipv6_address_mode'] = None
         if subnet['subnet']['host_routes'] == attr.ATTR_NOT_SPECIFIED:
             plugin_subnet['subnet']['host_routes'] = None
@@ -473,7 +474,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                 plugin_subnet['subnet']['allocation_pools'],
                 plugin_subnet['subnet']['cidr'])
         if (plugin_subnet['subnet']['gateway_ip'] and
-            plugin_subnet['subnet']['allocation_pools']):
+                plugin_subnet['subnet']['allocation_pools']):
             self._validate_gw_out_of_pools(
                 plugin_subnet['subnet']['gateway_ip'],
                 plugin_subnet['subnet']['allocation_pools'])
@@ -508,7 +509,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         plugin_subnet['subnet']['id'] = existing_subnet['id']
         self._validate_subnet(context, plugin_subnet['subnet'])
         if ('gateway_ip' in plugin_subnet['subnet'] and
-            plugin_subnet['subnet']['gateway_ip']):
+                plugin_subnet['subnet']['gateway_ip']):
             self._validate_gw_out_of_pools(
                 plugin_subnet['subnet']['gateway_ip'],
                 existing_subnet['allocation_pools'])
@@ -624,7 +625,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
                 if (not found and
                     not super(
                         NeutronPluginContrailCoreV2, self)._check_subnet_ip(
-                            subnet['cidr'], fixed['ip_address'])):
+                        subnet['cidr'], fixed['ip_address'])):
                     msg = _('IP address %s is not a valid IP for the defined '
                             'subnet') % fixed['ip_address']
                     raise exc.InvalidInput(error_message=msg)
@@ -654,7 +655,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         for original_ip in original_ips[:]:
             for new_ip in new_ips[:]:
                 if ('ip_address' in new_ip and
-                    original_ip['ip_address'] == new_ip['ip_address']):
+                        original_ip['ip_address'] == new_ip['ip_address']):
                     original_ips.remove(original_ip)
                     new_ips.remove(new_ip)
                     prev_ips.append(original_ip)
@@ -1021,7 +1022,7 @@ class NeutronPluginContrailCoreV2(db_base_plugin_v2.NeutronDbPluginV2,
         """
         plugin_sg = copy.deepcopy(security_group)
         sg_dicts = self._update_resource('security_group', context, sg_id,
-                                          plugin_sg)
+                                         plugin_sg)
 
         LOG.debug("update_security_group(): %r", sg_dicts)
         return sg_dicts
