@@ -1,4 +1,4 @@
-# Copyright (c) 2012 OpenStack Foundation.
+# Copyright 2014 Juniper Networks.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,18 +16,20 @@
 
 import copy
 import datetime
+import json
 import sys
 import uuid
 
-import json
-import netaddr
 import mock
+import netaddr
 from oslo.config import cfg
+import requests
 
 from neutron.api import extensions
 from neutron.tests.unit import test_db_plugin as test_plugin
-from neutron.tests.unit import test_extensions
 from neutron.tests.unit import test_extension_security_group as test_sg
+from neutron.tests.unit import test_extensions
+
 
 VN_LIST = []
 
@@ -844,8 +846,7 @@ class FakeAddrMgmt(object):
     def alloc_ip(self, network_id, port_id, ip_version):
         subnet_dicts = [
             sn for sn in self._subnet_dicts.values() if sn[
-                'network_id'] == network_id and sn[
-                'ip_version'] == ip_version
+                'network_id'] == network_id and sn['ip_version'] == ip_version
         ]
 
         for subnet_dict in subnet_dicts:
@@ -899,6 +900,8 @@ def fake_requests_post(*args, **kwargs):
 fake_requests = mock.MagicMock(name='fake_requests_pkg')
 sys.modules['requests'] = fake_requests
 fake_requests.post = fake_requests_post
+fake_requests.codes.ok = requests.codes.ok
+fake_requests.codes.conflict = requests.codes.conflict
 
 CONTRAIL_PKG_PATH = "neutron.plugins.opencontrail.contrail_plugin_core"
 
@@ -982,6 +985,12 @@ class TestContrailSubnetsV2(test_plugin.TestSubnetsV2,
     def test_create_subnet_nonzero_cidr(self):
         pass
 
+    def test_create_two_subnets_same_cidr_returns_400(self):
+        pass
+
+    def test_create_2_subnets_overlapping_cidr_not_allowed_returns_400(self):
+        pass
+
 
 class TestContrailPortsV2(test_plugin.TestPortsV2,
                           JVContrailPluginTestCase):
@@ -1038,6 +1047,9 @@ class TestContrailPortsV2(test_plugin.TestPortsV2,
     def test_delete_port(self):
         pass
 
+    def test_overlapping_subnets(self):
+        pass
+
 
 class TestContrailSecurityGroups(test_sg.TestSecurityGroups,
                                  JVContrailPluginTestCase):
@@ -1059,4 +1071,7 @@ class TestContrailSecurityGroups(test_sg.TestSecurityGroups,
         pass
 
     def test_create_security_group_rule_icmp_with_code_only(self):
+        pass
+
+    def test_list_ports_security_group(self):
         pass
