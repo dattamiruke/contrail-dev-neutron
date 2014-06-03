@@ -1750,16 +1750,27 @@ class DBInterface(object):
                     except NoIdError:
                         continue
 
-                ip_addr = ip_obj.get_instance_ip_address()
-
-                ip_q_dict = {}
-                ip_q_dict['port_id'] = port_obj.uuid
-                ip_q_dict['ip_address'] = ip_addr
-                ip_q_dict['subnet_id'] = self._ip_address_to_subnet_id(ip_addr,
-                                                                       net_obj)
-                ip_q_dict['net_id'] = net_id
-
-                port_q_dict['fixed_ips'].append(ip_q_dict)
+                ip_addr_inst = ip_obj.get_instance_ip_address()
+                if isinstance(ip_addr_inst, list):
+                    ip_addrs = ip_addr_inst
+                    for ip_addr in ip_addrs:
+                        ip_q_dict = {}
+                        ip_q_dict['port_id'] = port_obj.uuid
+                        ip_q_dict['ip_address'] = ip_addr
+                        ip_q_dict['subnet_id'] = \
+                            self._ip_address_to_subnet_id(ip_addr, net_obj)
+                        ip_q_dict['net_id'] = net_id
+                        port_q_dict['fixed_ips'].append(ip_q_dict)
+                else:
+                    # Backward compatibility
+                    ip_addr = ip_addr_inst
+                    ip_q_dict = {}
+                    ip_q_dict['port_id'] = port_obj.uuid
+                    ip_q_dict['ip_address'] = ip_addr
+                    ip_q_dict['subnet_id'] = \
+                        self._ip_address_to_subnet_id(ip_addr, net_obj)
+                    ip_q_dict['net_id'] = net_id
+                    port_q_dict['fixed_ips'].append(ip_q_dict)
 
         sg_dict = {'port_security_enabled': True}
         sg_dict['security_groups'] = []
